@@ -4,14 +4,18 @@ import pytest
 
 from app.research.graph import build_research_graph
 from app.research.planner import MockPlanner
-from app.research.schemas import OpenAction
+from app.research.schemas import OpenAction, SearchResult
 from app.research.state import ResearchState
 from app.tools.document import StubDocumentOpener
-from app.tools.search import StubSearchGateway
+
+
+class FakeSearchGateway:
+    async def search(self, *, goal: str, query: str) -> list[SearchResult]:
+        return [SearchResult(url="https://example.com/mock-source", title="Mock source")]
 
 
 def make_graph(planner: MockPlanner) -> object:
-    return build_research_graph(planner, StubSearchGateway(), StubDocumentOpener())
+    return build_research_graph(planner, FakeSearchGateway(), StubDocumentOpener())
 
 
 def test_mock_question_moves_through_search_open_and_answer() -> None:

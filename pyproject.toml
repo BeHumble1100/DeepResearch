@@ -4,8 +4,10 @@ version = "0.1.0"
 description = "Evidence-driven multi-hop web research agent"
 requires-python = ">=3.10"
 dependencies = [
+    "httpx>=0.28,<1.0",
     "langgraph>=1.0,<2.0",
     "pydantic>=2.0,<3.0",
+    "pydantic-settings>=2.0,<3.0",
 ]
 
 [build-system]

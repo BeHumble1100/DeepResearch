@@ -62,6 +62,12 @@ class SearchResult(BaseModel):
     snippet: str | None = None
 
 
+class QueryRewrite(BaseModel):
+    """One or more search queries derived from the current research goal."""
+
+    queries: list[str] = Field(min_length=1)
+
+
 class SearchAction(BaseModel):
     type: Literal["search"] = "search"
     goal: str

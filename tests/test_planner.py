@@ -18,7 +18,7 @@ from app.research.schemas import (
 )
 from app.research.state import ResearchState
 from app.tools.document import StubDocumentOpener
-from app.tools.search import StubSearchGateway
+from app.research.schemas import SearchResult
 
 
 class FakeLLMClient:
@@ -38,6 +38,11 @@ class FakeLLMClient:
 
     async def text(self, *, messages: list[Message], **kwargs: object) -> str:
         return "unused"
+
+
+class FakeSearchGateway:
+    async def search(self, *, goal: str, query: str) -> list[SearchResult]:
+        return [SearchResult(url="https://example.com/mock-source", title="Mock source")]
 
 
 def test_llm_planner_initializes_with_a_structured_contract() -> None:
@@ -95,6 +100,13 @@ def test_llm_planner_sends_a_compact_state_without_fact_passages() -> None:
                 summary="Short summary",
             )
         ],
+        search_results=[
+            SearchResult(
+                url="https://example.com/search-result",
+                title="Search result title",
+                snippet="Search snippet",
+            )
+        ],
     )
 
     asyncio.run(planner.next_action(state))
@@ -102,6 +114,7 @@ def test_llm_planner_sends_a_compact_state_without_fact_passages() -> None:
     context = client.calls[0][0][1]["content"]
     assert "Known claim" in context
     assert "Short summary" in context
+    assert "Search result title" in context
     assert hidden_passage not in context
 
 
@@ -124,7 +137,7 @@ def test_fake_llm_client_drives_the_phase_2_graph_loop() -> None:
     )
     graph = build_research_graph(
         LLMPlanner(client),
-        StubSearchGateway(),
+        FakeSearchGateway(),
         StubDocumentOpener(),
     )
 

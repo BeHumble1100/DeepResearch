@@ -23,7 +23,7 @@ def build_research_graph(
     search_gateway: SearchGateway,
     document_opener: DocumentOpener,
 ):
-    """Build a stubbed research loop without external retrieval or parsing."""
+    """Build the minimal research loop with injected search and document boundaries."""
 
     async def initialize(state: GraphState) -> dict[str, ResearchState]:
         research = state["research"]
@@ -41,12 +41,12 @@ def build_research_graph(
     async def plan(state: GraphState) -> dict[str, Action]:
         return {"action": await planner.next_action(state["research"])}
 
-    def search(state: GraphState) -> dict[str, ResearchState]:
+    async def search(state: GraphState) -> dict[str, ResearchState]:
         research = state["research"]
         action = state["action"]
         if not isinstance(action, SearchAction):
             raise ValueError("Search node requires a SearchAction.")
-        results = search_gateway.search(goal=action.goal, query=action.query)
+        results = await search_gateway.search(goal=action.goal, query=action.query)
         return {
             "research": research.model_copy(
                 update={
