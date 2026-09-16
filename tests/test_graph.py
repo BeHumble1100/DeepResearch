@@ -1,10 +1,20 @@
 import asyncio
+from pathlib import Path
 
 import pytest
 
 from app.research.graph import build_research_graph
 from app.research.planner import MockPlanner
-from app.research.schemas import OpenAction, Passage, SearchResult
+from app.research.guard import AnswerGuard
+from app.research.schemas import (
+    AnswerAction,
+    ExtractedFact,
+    FactExtraction,
+    OpenAction,
+    Passage,
+    SearchAction,
+    SearchResult,
+)
 from app.research.state import ResearchState
 
 
@@ -21,7 +31,7 @@ class FakeDocumentOpener:
             id="mock-document",
             url=url,
             content_type="text/html",
-            local_path=".deepresearch/documents/mock-document/content.txt",
+            local_path=str(Path(__file__)),
         )
 
 
@@ -40,12 +50,27 @@ class FakeDocumentRetriever:
         ]
 
 
+class FakeFactExtractor:
+    async def extract(self, *, document, passages, constraints) -> FactExtraction:
+        return FactExtraction(
+            facts=[
+                ExtractedFact(
+                    statement="Mock source supports the answer.",
+                    confidence=0.9,
+                    passage_id=passages[0].id,
+                )
+            ]
+        )
+
+
 def make_graph(planner: MockPlanner) -> object:
     return build_research_graph(
         planner,
         FakeSearchGateway(),
         FakeDocumentOpener(),
         FakeDocumentRetriever(),
+        FakeFactExtractor(),
+        AnswerGuard(),
     )
 
 
@@ -95,3 +120,31 @@ def test_loop_stops_when_the_step_budget_is_exhausted() -> None:
     assert research.status == "budget_exhausted"
     assert research.answer is None
     assert research.step_count == 2
+
+
+class RejectThenSearchPlanner(MockPlanner):
+    def __init__(self) -> None:
+        self._actions = [
+            SearchAction(goal="Find", query="Question"),
+            OpenAction(goal="Read", url="https://example.com/mock-source"),
+            AnswerAction(answer="Unsupported", supporting_fact_ids=[], supporting_constraint_ids=[]),
+            SearchAction(goal="Try another source", query="Question evidence"),
+        ]
+
+    async def next_action(self, state: ResearchState):
+        return self._actions.pop(0)
+
+
+def test_rejected_answer_returns_to_planner() -> None:
+    graph = make_graph(RejectThenSearchPlanner())
+
+    result = asyncio.run(
+        graph.ainvoke(
+            {"research": ResearchState(question="Question", max_steps=4), "action": None}
+        )
+    )
+
+    research = result["research"]
+    assert research.status == "budget_exhausted"
+    assert research.answer is None
+    assert research.executed_queries == ["Question", "Question evidence"]

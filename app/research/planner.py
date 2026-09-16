@@ -60,7 +60,7 @@ class MockPlanner:
         if state.located_passages:
             return AnswerAction(
                 answer="Mock answer",
-                supporting_fact_ids=[],
+                supporting_fact_ids=[fact.id for fact in state.facts],
                 supporting_constraint_ids=[],
             )
         raise ValueError("Mock planner has no available action for the current state.")

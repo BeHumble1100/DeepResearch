@@ -5,6 +5,7 @@ from pydantic import BaseModel
 
 from app.llm.client import Message
 from app.research.graph import build_research_graph
+from app.research.guard import AnswerGuard
 from app.research.planner import Initialization, LLMPlanner
 from app.research.schemas import (
     ActionDecision,
@@ -51,7 +52,7 @@ class FakeDocumentOpener:
             id="mock-document",
             url=url,
             content_type="text/html",
-            local_path=".deepresearch/documents/mock-document/content.txt",
+            local_path=__file__,
         )
 
 
@@ -68,6 +69,13 @@ class FakeDocumentRetriever:
                 rank=1,
             )
         ]
+
+
+class FakeFactExtractor:
+    async def extract(self, *, document, passages, constraints):
+        from app.research.schemas import FactExtraction
+
+        return FactExtraction()
 
 
 def test_llm_planner_initializes_with_a_structured_contract() -> None:
@@ -175,11 +183,15 @@ def test_fake_llm_client_drives_the_phase_2_graph_loop() -> None:
         FakeSearchGateway(),
         FakeDocumentOpener(),
         FakeDocumentRetriever(),
+        FakeFactExtractor(),
+        AnswerGuard(),
     )
 
     result = asyncio.run(
-        graph.ainvoke({"research": ResearchState(question="Question"), "action": None})
+        graph.ainvoke(
+            {"research": ResearchState(question="Question", max_steps=3), "action": None}
+        )
     )
 
-    assert result["research"].status == "completed"
-    assert result["research"].answer == "Mock answer"
+    assert result["research"].status == "budget_exhausted"
+    assert result["research"].answer is None
