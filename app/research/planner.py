@@ -14,6 +14,7 @@ from .schemas import (
     ActionDecision,
     AnswerAction,
     Constraint,
+    ConstraintProposal,
     OpenAction,
     LocateAction,
     SearchAction,
@@ -25,6 +26,13 @@ from .state import ResearchState
 class Initialization(BaseModel):
     target: Target
     constraints: list[Constraint] = Field(default_factory=list)
+
+
+class InitializationProposal(BaseModel):
+    """LLM initialization output before deterministic state normalization."""
+
+    target: Target
+    constraints: list[ConstraintProposal] = Field(default_factory=list)
 
 
 class Planner(Protocol):
@@ -76,19 +84,30 @@ class LLMPlanner:
         messages: list[Message] = [
             {
                 "role": "system",
-                "content": "Extract a research target and verifiable constraints. Do not plan steps.",
+                "content": (
+                    "Only model the question. Do not search, answer, infer the final answer, or "
+                    "create a research plan. Return one target and atomic, independently "
+                    "verifiable constraints. Each constraint must describe one checkable condition."
+                ),
             },
             {"role": "user", "content": question},
         ]
-        return await self._client.structured(messages=messages, schema=Initialization)
+        proposal = await self._client.structured(messages=messages, schema=InitializationProposal)
+        return _materialize_initialization(proposal)
 
     async def next_action(self, state: ResearchState) -> Action:
         messages: list[Message] = [
             {
                 "role": "system",
                 "content": (
-                    "Choose exactly one next research action. Return a structured SEARCH, OPEN, "
-                    "LOCATE, or ANSWER proposal from the supplied state."
+                    "Choose exactly one next research action from the supplied state. Prioritize "
+                    "unresolved required constraints and avoid repeated queries, URLs, or document "
+                    "locates. SEARCH only when a useful resource is not yet available. OPEN only a "
+                    "URL from search results or known documents. LOCATE only an opened document when "
+                    "document evidence is needed. ANSWER only when required constraints are supported "
+                    "by existing facts and cite their IDs. Search snippets are not final evidence. Do "
+                    "not create a multi-step plan. Return one structured SEARCH, OPEN, LOCATE, or "
+                    "ANSWER proposal."
                 ),
             },
             {"role": "user", "content": _compact_state_view(state)},
@@ -102,6 +121,7 @@ def _compact_state_view(state: ResearchState) -> str:
 
     context = {
         "original_question": state.question,
+        "current_goal": state.current_goal,
         "target": state.target.model_dump() if state.target else None,
         "resolved_entities": state.resolved_entities,
         "constraints": [
@@ -142,3 +162,50 @@ def _compact_state_view(state: ResearchState) -> str:
         "remaining_step_budget": state.max_steps - state.step_count,
     }
     return json.dumps(context, ensure_ascii=False)
+
+
+def _materialize_initialization(proposal: InitializationProposal) -> Initialization:
+    """Assign deterministic state-owned IDs and initial fields to unique constraints."""
+    constraints: list[Constraint] = []
+    seen: set[tuple[str, str | None, str | None, str | None, bool]] = set()
+    for candidate in proposal.constraints:
+        normalized = _normalize_constraint(candidate)
+        key = (
+            normalized.description,
+            normalized.subject,
+            normalized.predicate,
+            normalized.object,
+            normalized.required,
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        constraints.append(
+            Constraint(
+                id=f"c{len(constraints) + 1}",
+                description=normalized.description,
+                subject=normalized.subject,
+                predicate=normalized.predicate,
+                object=normalized.object,
+                required=normalized.required,
+                status="unknown",
+                supporting_fact_ids=[],
+            )
+        )
+    return Initialization(target=proposal.target, constraints=constraints)
+
+
+def _normalize_constraint(candidate: ConstraintProposal) -> ConstraintProposal:
+    return ConstraintProposal(
+        description=candidate.description.strip(),
+        subject=_normalize_optional(candidate.subject),
+        predicate=_normalize_optional(candidate.predicate),
+        object=_normalize_optional(candidate.object),
+        required=candidate.required,
+    )
+
+
+def _normalize_optional(value: str | None) -> str | None:
+    if value is None:
+        return None
+    return value.strip() or None

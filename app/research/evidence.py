@@ -10,7 +10,14 @@ from typing import Literal, Protocol
 
 from app.llm.client import LLMClient, Message
 
-from .schemas import Constraint, DocumentRef, Fact, FactExtraction, Passage
+from .schemas import (
+    Constraint,
+    DocumentRef,
+    EntityProvenance,
+    Fact,
+    FactExtraction,
+    Passage,
+)
 from .state import ResearchState
 
 EvidenceKind = Literal["open", "locate"]
@@ -43,14 +50,19 @@ class LLMFactExtractor:
         passages: list[Passage],
         constraints: list[Constraint],
     ) -> FactExtraction:
+        if not passages:
+            return FactExtraction()
         messages: list[Message] = [
             {
                 "role": "system",
                 "content": (
-                    "Extract only verifiable claims supported by the supplied passages. "
-                    "For each claim, cite exactly one supplied passage_id. Do not use search "
-                    "snippets or outside knowledge. Mark a constraint supported or contradicted "
-                    "only when that passage directly establishes it."
+                    "Extract only atomic facts explicitly and unambiguously supported by one supplied "
+                    "passage. Each fact and resolved entity must cite exactly one supplied passage_id. "
+                    "You may resolve an explicit local reference only within that same passage. Do not "
+                    "combine passages, use outside knowledge, guess uncertain references, or infer a "
+                    "conclusion. Return empty lists when no fact or entity is explicit. Mark a constraint "
+                    "contradicted only when a passage explicitly negates it; otherwise do not mark it "
+                    "contradicted. Do not use search snippets."
                 ),
             },
             {
@@ -110,6 +122,7 @@ def apply_fact_extraction(
     existing_fact_ids = {fact.id for fact in facts}
     constraints = list(research.constraints)
     entities = dict(research.resolved_entities)
+    entity_provenance = dict(research.resolved_entity_provenance)
 
     for candidate in extraction.facts:
         passage = passage_by_id.get(candidate.passage_id)
@@ -155,10 +168,27 @@ def apply_fact_extraction(
                 update={"status": status, "supporting_fact_ids": list(dict.fromkeys(fact_ids))}
             )
 
-    for key, value in extraction.resolved_entities.items():
-        entities.setdefault(key, value)
+    for entity in extraction.resolved_entities:
+        passage = passage_by_id.get(entity.passage_id)
+        if passage is None:
+            raise FactExtractionError("Fact extractor cited an unknown entity passage ID.")
+        if passage.document_id != document.id:
+            raise FactExtractionError("Fact extractor cited an entity passage from another document.")
+        if entity.key not in entities:
+            entities[entity.key] = entity.value
+            entity_provenance[entity.key] = EntityProvenance(
+                source_url=document.url,
+                document_id=document.id,
+                passage_id=passage.id,
+                evidence_kind=evidence_kind,
+            )
     return research.model_copy(
-        update={"facts": facts, "constraints": constraints, "resolved_entities": entities}
+        update={
+            "facts": facts,
+            "constraints": constraints,
+            "resolved_entities": entities,
+            "resolved_entity_provenance": entity_provenance,
+        }
     )
 
 

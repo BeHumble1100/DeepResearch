@@ -28,6 +28,16 @@ class Constraint(BaseModel):
     supporting_fact_ids: list[str] = Field(default_factory=list)
 
 
+class ConstraintProposal(BaseModel):
+    """A constraint proposed by initialization before code assigns state fields."""
+
+    description: str = Field(min_length=1)
+    subject: str | None = None
+    predicate: str | None = None
+    object: str | None = None
+    required: bool = True
+
+
 class Fact(BaseModel):
     """A verifiable claim with traceable source evidence."""
 
@@ -85,7 +95,7 @@ class Passage(BaseModel):
 class PassageRanking(BaseModel):
     """Structured LLM output that ranks only supplied candidate passage IDs."""
 
-    passage_ids: list[str] = Field(min_length=1)
+    passage_ids: list[str] = Field(default_factory=list)
 
 
 class ConstraintEvidence(BaseModel):
@@ -107,11 +117,28 @@ class ExtractedFact(BaseModel):
     constraint_evidence: list[ConstraintEvidence] = Field(default_factory=list)
 
 
+class ExtractedEntity(BaseModel):
+    """An entity explicitly resolved in one supplied passage."""
+
+    key: str = Field(min_length=1)
+    value: str = Field(min_length=1)
+    passage_id: str
+
+
+class EntityProvenance(BaseModel):
+    """Compact source metadata for one resolved entity."""
+
+    source_url: str
+    document_id: str
+    passage_id: str
+    evidence_kind: Literal["open", "locate"]
+
+
 class FactExtraction(BaseModel):
     """Structured output returned by a fact extractor for bounded source passages."""
 
     facts: list[ExtractedFact] = Field(default_factory=list)
-    resolved_entities: dict[str, str] = Field(default_factory=dict)
+    resolved_entities: list[ExtractedEntity] = Field(default_factory=list)
 
 
 class TraceFact(BaseModel):
