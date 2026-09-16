@@ -1,3 +1,3 @@
 # DeepResearch
 
-Minimal Python project.
+DeepResearch is a project for search + LLM synthesis.
