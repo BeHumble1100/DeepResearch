@@ -1,4 +1,4 @@
-from app.research.schemas import Constraint, Fact, SearchAction
+from app.research.schemas import Constraint, Fact, SearchAction, SearchResult
 from app.research.state import ResearchState
 from app.research.trace import append_action_trace
 
@@ -38,6 +38,11 @@ def test_trace_is_serializable_and_does_not_copy_fact_passages() -> None:
         after,
         action=SearchAction(goal="Find the author", query="Question"),
         observation_summary="Search completed.",
+        planner_context={"remaining_step_budget": 8, "current_goal": None},
+        search_results=[
+            SearchResult(url=f"https://example.com/{index}", title=f"Result {index}")
+            for index in range(6)
+        ],
     )
 
     entry = traced.trace[0]
@@ -45,6 +50,15 @@ def test_trace_is_serializable_and_does_not_copy_fact_passages() -> None:
     assert entry.constraint_changes[0].previous_status == "unknown"
     assert entry.constraint_changes[0].current_status == "supported"
     assert entry.resolved_entities == {"author": "Ada"}
+    assert entry.remaining_step_budget == 8
+    assert entry.planner_context == {"remaining_step_budget": 8, "current_goal": None}
+    assert [result.title for result in entry.search_results] == [
+        "Result 0",
+        "Result 1",
+        "Result 2",
+        "Result 3",
+        "Result 4",
+    ]
     encoded = entry.model_dump_json()
     assert "This full passage" not in encoded
     assert "passage\":\"" not in encoded

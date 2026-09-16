@@ -2,12 +2,20 @@
 
 from __future__ import annotations
 
+import json
 from typing import TypedDict
 
 from langgraph.graph import END, START, StateGraph
 
-from .planner import Planner
-from .schemas import Action, AnswerAction, LocateAction, OpenAction, SearchAction
+from .planner import Planner, _compact_state_view
+from .schemas import (
+    Action,
+    AnswerAction,
+    LocateAction,
+    OpenAction,
+    SearchAction,
+    TraceGuardResult,
+)
 from .state import ResearchState
 from .evidence import FactExtractor, apply_fact_extraction, opening_passage
 from .guard import AnswerGuard
@@ -20,6 +28,7 @@ from app.tools.retrieval import DocumentRetriever
 class GraphState(TypedDict):
     research: ResearchState
     action: Action | None
+    planner_context: dict[str, object] | None
 
 
 def build_research_graph(
@@ -49,8 +58,13 @@ def build_research_graph(
             )
         }
 
-    async def plan(state: GraphState) -> dict[str, Action]:
-        return {"action": await planner.next_action(state["research"])}
+    async def plan(state: GraphState) -> dict[str, object]:
+        research = state["research"]
+        planner_context = json.loads(_compact_state_view(research))
+        return {
+            "action": await planner.next_action(research),
+            "planner_context": planner_context,
+        }
 
     async def search(state: GraphState) -> dict[str, ResearchState]:
         research = state["research"]
@@ -73,6 +87,8 @@ def build_research_graph(
                 updated,
                 action=action,
                 observation_summary=f"Search returned {len(results)} normalized results.",
+                planner_context=state.get("planner_context"),
+                search_results=results,
             )
         }
 
@@ -118,6 +134,7 @@ def build_research_graph(
                     f"Opened {document.content_type} document {document.id} and extracted facts "
                     "from its bounded opening excerpt."
                 ),
+                planner_context=state.get("planner_context"),
             )
         }
 
@@ -162,6 +179,7 @@ def build_research_graph(
                 observation_summary=(
                     f"Located {len(passages)} relevant passages in document {document.id}."
                 ),
+                planner_context=state.get("planner_context"),
             )
         }
 
@@ -200,6 +218,8 @@ def build_research_graph(
                     accepted,
                     action=action,
                     observation_summary="Answer guard accepted the evidence-backed proposal.",
+                    planner_context=state.get("planner_context"),
+                    guard_result=TraceGuardResult(accepted=True),
                 )
             }
         rejected = research.model_copy(update={"answer": None, "status": "planning"})
@@ -209,6 +229,10 @@ def build_research_graph(
                 rejected,
                 action=action,
                 observation_summary="Answer guard rejected the proposal: " + "; ".join(result.reasons),
+                planner_context=state.get("planner_context"),
+                guard_result=TraceGuardResult(
+                    accepted=False, reject_reasons=list(result.reasons)
+                ),
             )
         }
 

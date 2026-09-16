@@ -5,3 +5,5 @@
 .idea/
 *.egg-info/
 .deepresearch/
+.env
+eval/answers/
