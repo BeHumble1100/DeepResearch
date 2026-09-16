@@ -191,6 +191,7 @@ class ResearchTraceEntry(BaseModel):
     answer_supporting_fact_ids: list[str] = Field(default_factory=list)
     answer_supporting_constraint_ids: list[str] = Field(default_factory=list)
     guard_result: TraceGuardResult | None = None
+    validation_rejection_reason: str | None = None
     new_facts: list[TraceFact] = Field(default_factory=list)
     constraint_changes: list[ConstraintChange] = Field(default_factory=list)
     resolved_entities: dict[str, str] = Field(default_factory=dict)

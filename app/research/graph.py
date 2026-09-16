@@ -71,12 +71,24 @@ def build_research_graph(
         action = state["action"]
         if not isinstance(action, SearchAction):
             raise ValueError("Search node requires a SearchAction.")
+        if action.query in research.executed_queries:
+            return {
+                "research": _reject_action(
+                    research,
+                    action=action,
+                    planner_context=state.get("planner_context"),
+                    reason="SEARCH query exactly duplicates an earlier query in this research run.",
+                )
+            }
         results = await search_gateway.search(goal=action.goal, query=action.query)
         updated = research.model_copy(
             update={
                 "current_goal": action.goal,
                 "executed_queries": [*research.executed_queries, action.query],
                 "search_results": results,
+                "discovered_urls": list(
+                    dict.fromkeys([*research.discovered_urls, *(result.url for result in results)])
+                ),
                 "step_count": research.step_count + 1,
                 "status": "planning",
             }
@@ -97,9 +109,16 @@ def build_research_graph(
         action = state["action"]
         if not isinstance(action, OpenAction):
             raise ValueError("Open node requires an OpenAction.")
-        known_urls = {result.url for result in research.search_results}
+        known_urls = set(research.discovered_urls)
         if action.url not in known_urls:
-            raise ValueError("OpenAction URL must come from a prior search result.")
+            return {
+                "research": _reject_action(
+                    research,
+                    action=action,
+                    planner_context=state.get("planner_context"),
+                    reason="OPEN URL was not discovered by a prior SEARCH in this research run.",
+                )
+            }
         document = await document_opener.open(url=action.url)
         passage = await opening_passage(
             document, max_chars=fact_extraction_open_max_chars
@@ -143,6 +162,18 @@ def build_research_graph(
         action = state["action"]
         if not isinstance(action, LocateAction):
             raise ValueError("Locate node requires a LocateAction.")
+        if _is_duplicate_locate(research, action):
+            return {
+                "research": _reject_action(
+                    research,
+                    action=action,
+                    planner_context=state.get("planner_context"),
+                    reason=(
+                        "LOCATE document_id and query exactly duplicate an earlier LOCATE "
+                        "in this research run."
+                    ),
+                )
+            }
         document = next((item for item in research.documents if item.id == action.document_id), None)
         if document is None:
             raise ValueError("LocateAction document_id must refer to an opened document.")
@@ -188,6 +219,18 @@ def build_research_graph(
         action = state["action"]
         if not isinstance(action, AnswerAction):
             raise ValueError("Answer node requires an AnswerAction.")
+        if not any(
+            fact_id in {fact.id for fact in research.facts}
+            for fact_id in action.supporting_fact_ids
+        ):
+            return {
+                "research": _reject_action(
+                    research,
+                    action=action,
+                    planner_context=state.get("planner_context"),
+                    reason="ANSWER proposal does not cite any real supporting Fact from this research run.",
+                )
+            }
         return {
             "research": research.model_copy(
                 update={
@@ -260,6 +303,9 @@ def build_research_graph(
     def route_answer_guard(state: GraphState) -> str:
         return "accept" if state["research"].status == "answer_accepted" else "reject"
 
+    def route_answer(state: GraphState) -> str:
+        return "guard" if state["research"].status == "answer_proposed" else "budget"
+
     graph = StateGraph(GraphState)
     graph.add_node("initialize", initialize)
     graph.add_node("budget", lambda state: {})
@@ -282,8 +328,43 @@ def build_research_graph(
     graph.add_edge("search", "budget")
     graph.add_edge("open", "budget")
     graph.add_edge("locate", "budget")
-    graph.add_edge("answer", "guard")
+    graph.add_conditional_edges("answer", route_answer, {"guard": "guard", "budget": "budget"})
     graph.add_conditional_edges("guard", route_answer_guard, {"accept": "finish", "reject": "budget"})
     graph.add_edge("finish", END)
     graph.add_edge("exhausted", END)
     return graph.compile()
+
+
+def _reject_action(
+    research: ResearchState,
+    *,
+    action: Action,
+    planner_context: dict[str, object] | None,
+    reason: str,
+) -> ResearchState:
+    """Record a safe deterministic action rejection and return to planning."""
+    rejected = research.model_copy(
+        update={
+            "current_goal": getattr(action, "goal", research.current_goal),
+            "step_count": research.step_count + 1,
+            "status": "planning",
+        }
+    )
+    return append_action_trace(
+        research,
+        rejected,
+        action=action,
+        observation_summary="Rejected action validation: " + reason,
+        planner_context=planner_context,
+        validation_rejection_reason=reason,
+    )
+
+
+def _is_duplicate_locate(research: ResearchState, action: LocateAction) -> bool:
+    """Match only exact document/query pairs; semantic similarity is intentionally out of scope."""
+    return any(
+        entry.action == "locate"
+        and entry.action_input.get("document_id") == action.document_id
+        and entry.action_input.get("query") == action.query
+        for entry in research.trace
+    )

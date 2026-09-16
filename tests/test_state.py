@@ -11,6 +11,7 @@ def test_research_state_starts_with_compact_empty_collections() -> None:
     assert state.constraints == []
     assert state.facts == []
     assert state.search_results == []
+    assert state.discovered_urls == []
     assert state.located_passages == []
     assert state.max_steps == 8
 

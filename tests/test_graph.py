@@ -1,8 +1,6 @@
 import asyncio
 from pathlib import Path
 
-import pytest
-
 from app.research.graph import build_research_graph
 from app.research.planner import MockPlanner
 from app.research.guard import AnswerGuard
@@ -10,6 +8,7 @@ from app.research.schemas import (
     AnswerAction,
     ExtractedFact,
     FactExtraction,
+    LocateAction,
     OpenAction,
     Passage,
     SearchAction,
@@ -24,9 +23,13 @@ class FakeSearchGateway:
 
 
 class FakeDocumentOpener:
+    def __init__(self) -> None:
+        self.opened_urls: list[str] = []
+
     async def open(self, *, url: str):
         from app.research.schemas import DocumentRef
 
+        self.opened_urls.append(url)
         return DocumentRef(
             id="mock-document",
             url=url,
@@ -63,11 +66,16 @@ class FakeFactExtractor:
         )
 
 
-def make_graph(planner: MockPlanner) -> object:
+def make_graph(
+    planner: MockPlanner,
+    *,
+    search_gateway: FakeSearchGateway | None = None,
+    document_opener: FakeDocumentOpener | None = None,
+) -> object:
     return build_research_graph(
         planner,
-        FakeSearchGateway(),
-        FakeDocumentOpener(),
+        search_gateway or FakeSearchGateway(),
+        document_opener or FakeDocumentOpener(),
         FakeDocumentRetriever(),
         FakeFactExtractor(),
         AnswerGuard(),
@@ -92,6 +100,7 @@ def test_mock_question_moves_through_search_open_and_answer() -> None:
     assert research.status == "completed"
     assert research.step_count == 4
     assert research.executed_queries == ["Who wrote this work?"]
+    assert research.discovered_urls == ["https://example.com/mock-source"]
     assert research.visited_urls == ["https://example.com/mock-source"]
     assert len(research.documents) == 1
     assert research.located_passages[0].text == "Relevant passage"
@@ -118,11 +127,88 @@ class InvalidOpenPlanner(MockPlanner):
         return OpenAction(goal="Open an unknown URL", url="https://example.com/unknown")
 
 
-def test_open_rejects_urls_not_returned_by_search() -> None:
-    graph = make_graph(InvalidOpenPlanner())
+def test_open_rejects_undiscovered_urls_without_calling_opener() -> None:
+    opener = FakeDocumentOpener()
+    graph = make_graph(InvalidOpenPlanner(), document_opener=opener)
 
-    with pytest.raises(ValueError, match="prior search result"):
-        asyncio.run(graph.ainvoke({"research": ResearchState(question="Question"), "action": None}))
+    result = asyncio.run(
+        graph.ainvoke(
+            {"research": ResearchState(question="Question", max_steps=1), "action": None}
+        )
+    )
+
+    research = result["research"]
+    rejection = research.trace[0]
+    assert research.status == "budget_exhausted"
+    assert opener.opened_urls == []
+    assert rejection.action == "open"
+    assert rejection.action_input["url"] == "https://example.com/unknown"
+    assert rejection.planner_context is not None
+    assert rejection.remaining_step_budget == 1
+    assert rejection.validation_rejection_reason == (
+        "OPEN URL was not discovered by a prior SEARCH in this research run."
+    )
+
+
+class TwoSearchThenOpenPlanner(MockPlanner):
+    def __init__(self) -> None:
+        self._actions = [
+            SearchAction(goal="Discover first", query="first"),
+            SearchAction(goal="Discover second", query="second"),
+            OpenAction(goal="Open earlier result", url="https://example.com/first"),
+        ]
+
+    async def next_action(self, state: ResearchState):
+        return self._actions.pop(0)
+
+
+class TwoResultSearchGateway:
+    async def search(self, *, goal: str, query: str) -> list[SearchResult]:
+        return [SearchResult(url=f"https://example.com/{query}", title=query)]
+
+
+def test_open_accepts_url_discovered_before_most_recent_search() -> None:
+    opener = FakeDocumentOpener()
+    graph = make_graph(
+        TwoSearchThenOpenPlanner(),
+        search_gateway=TwoResultSearchGateway(),
+        document_opener=opener,
+    )
+
+    result = asyncio.run(
+        graph.ainvoke(
+            {"research": ResearchState(question="Question", max_steps=3), "action": None}
+        )
+    )
+
+    research = result["research"]
+    assert research.discovered_urls == [
+        "https://example.com/first",
+        "https://example.com/second",
+    ]
+    assert research.search_results == [
+        SearchResult(url="https://example.com/second", title="second")
+    ]
+    assert opener.opened_urls == ["https://example.com/first"]
+    assert research.documents[0].url == "https://example.com/first"
+
+
+def test_repeated_invalid_open_actions_are_limited_by_step_budget() -> None:
+    opener = FakeDocumentOpener()
+    graph = make_graph(InvalidOpenPlanner(), document_opener=opener)
+
+    result = asyncio.run(
+        graph.ainvoke(
+            {"research": ResearchState(question="Question", max_steps=2), "action": None}
+        )
+    )
+
+    research = result["research"]
+    assert research.status == "budget_exhausted"
+    assert research.step_count == 2
+    assert [entry.action for entry in research.trace] == ["open", "open", "budget_exhausted"]
+    assert all(entry.validation_rejection_reason for entry in research.trace[:2])
+    assert opener.opened_urls == []
 
 
 def test_loop_stops_when_the_step_budget_is_exhausted() -> None:
@@ -168,8 +254,124 @@ def test_rejected_answer_returns_to_planner() -> None:
     assert research.answer is None
     assert research.executed_queries == ["Question", "Question evidence"]
     assert research.trace[2].action == "answer"
-    assert "rejected" in research.trace[2].observation_summary
-    assert research.trace[2].guard_result is not None
-    assert not research.trace[2].guard_result.accepted
-    assert research.trace[2].guard_result.reject_reasons
+    assert "Rejected action validation" in research.trace[2].observation_summary
+    assert research.trace[2].guard_result is None
+    assert research.trace[2].validation_rejection_reason
     assert research.trace[3].action == "search"
+
+
+class ScriptedPlanner(MockPlanner):
+    def __init__(self, actions):
+        self._actions = actions
+
+    async def next_action(self, state: ResearchState):
+        return self._actions.pop(0)
+
+
+class CountingSearchGateway(FakeSearchGateway):
+    def __init__(self) -> None:
+        self.queries: list[str] = []
+
+    async def search(self, *, goal: str, query: str) -> list[SearchResult]:
+        self.queries.append(query)
+        return await super().search(goal=goal, query=query)
+
+
+class CountingDocumentRetriever(FakeDocumentRetriever):
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def retrieve(self, *, document, goal: str, query: str) -> list[Passage]:
+        self.calls += 1
+        return await super().retrieve(document=document, goal=goal, query=query)
+
+
+class RecordingGuard(AnswerGuard):
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def check(self, *, research: ResearchState, proposal: AnswerAction):
+        self.calls += 1
+        return super().check(research=research, proposal=proposal)
+
+
+def test_duplicate_search_is_rejected_without_calling_gateway() -> None:
+    gateway = CountingSearchGateway()
+    graph = make_graph(
+        ScriptedPlanner(
+            [
+                SearchAction(goal="Find", query="first"),
+                SearchAction(goal="Repeat", query="first"),
+                SearchAction(goal="Find another", query="second"),
+            ]
+        ),
+        search_gateway=gateway,
+    )
+
+    result = asyncio.run(
+        graph.ainvoke({"research": ResearchState(question="Question", max_steps=3), "action": None})
+    )
+
+    research = result["research"]
+    assert gateway.queries == ["first", "second"]
+    assert research.trace[1].action == "search"
+    assert research.trace[1].validation_rejection_reason == (
+        "SEARCH query exactly duplicates an earlier query in this research run."
+    )
+    assert research.step_count == 3
+
+
+def test_duplicate_locate_is_rejected_without_calling_retriever() -> None:
+    retriever = CountingDocumentRetriever()
+    graph = build_research_graph(
+        ScriptedPlanner(
+            [
+                SearchAction(goal="Find", query="source"),
+                OpenAction(goal="Open", url="https://example.com/mock-source"),
+                LocateAction(goal="Locate", document_id="mock-document", query="evidence"),
+                LocateAction(goal="Repeat", document_id="mock-document", query="evidence"),
+            ]
+        ),
+        FakeSearchGateway(),
+        FakeDocumentOpener(),
+        retriever,
+        FakeFactExtractor(),
+        AnswerGuard(),
+    )
+
+    result = asyncio.run(
+        graph.ainvoke({"research": ResearchState(question="Question", max_steps=4), "action": None})
+    )
+
+    research = result["research"]
+    assert retriever.calls == 1
+    assert research.trace[3].action == "locate"
+    assert research.trace[3].validation_rejection_reason == (
+        "LOCATE document_id and query exactly duplicate an earlier LOCATE in this research run."
+    )
+
+
+def test_answer_without_real_fact_is_rejected_before_guard() -> None:
+    guard = RecordingGuard()
+    graph = build_research_graph(
+        ScriptedPlanner(
+            [AnswerAction(answer="Unsupported", supporting_fact_ids=[], supporting_constraint_ids=[])]
+        ),
+        FakeSearchGateway(),
+        FakeDocumentOpener(),
+        FakeDocumentRetriever(),
+        FakeFactExtractor(),
+        guard,
+    )
+
+    result = asyncio.run(
+        graph.ainvoke({"research": ResearchState(question="Question", max_steps=1), "action": None})
+    )
+
+    research = result["research"]
+    assert guard.calls == 0
+    assert research.answer is None
+    assert research.trace[0].action == "answer"
+    assert research.trace[0].validation_rejection_reason == (
+        "ANSWER proposal does not cite any real supporting Fact from this research run."
+    )

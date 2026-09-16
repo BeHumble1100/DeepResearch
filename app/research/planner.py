@@ -100,14 +100,20 @@ class LLMPlanner:
             {
                 "role": "system",
                 "content": (
-                    "Choose exactly one next research action from the supplied state. Prioritize "
-                    "unresolved required constraints and avoid repeated queries, URLs, or document "
-                    "locates. SEARCH only when a useful resource is not yet available. OPEN only a "
-                    "URL from search results or known documents. LOCATE only an opened document when "
-                    "document evidence is needed. ANSWER only when required constraints are supported "
-                    "by existing facts and cite their IDs. Search snippets are not final evidence. Do "
-                    "not create a multi-step plan. Return one structured SEARCH, OPEN, LOCATE, or "
-                    "ANSWER proposal."
+                "Choose exactly one next research action from the supplied state. Prioritize "
+                "unresolved required constraints and avoid repeated queries, URLs, or document "
+                "locates. Fact count alone is not research progress: prioritize newly supported "
+                "required constraints, new supporting facts, and explicitly resolved entities. If "
+                "the prior LOCATE on a document had no evidence progress, do not repeatedly LOCATE "
+                "that document; SEARCH for a new source instead. SEARCH only when a useful resource "
+                "is not yet available. When current search results include an obviously relevant "
+                "candidate for the goal, OPEN it before further searching. OPEN only a URL from "
+                "search results or known documents. Search snippets select candidates but are not "
+                "evidence. LOCATE only an opened document when document evidence is needed. Treat "
+                "an entity not supported by OPEN or LOCATE facts only as a hypothesis, and make the "
+                "next action explicitly verify it. ANSWER only when required constraints are "
+                "supported by existing facts and cite their IDs. Do not create a multi-step plan. "
+                "Return one structured SEARCH, OPEN, LOCATE, or ANSWER proposal."
                 ),
             },
             {"role": "user", "content": _compact_state_view(state)},
@@ -158,10 +164,27 @@ def _compact_state_view(state: ResearchState) -> str:
         "recent_actions": {
             "executed_queries": state.executed_queries,
             "visited_urls": state.visited_urls,
+            "last_locate_outcome": _last_locate_outcome(state),
         },
         "remaining_step_budget": state.max_steps - state.step_count,
     }
     return json.dumps(context, ensure_ascii=False)
+
+
+def _last_locate_outcome(state: ResearchState) -> dict[str, object] | None:
+    """Expose only the latest LOCATE's compact evidence outcome to the planner."""
+    if not state.trace or state.trace[-1].action != "locate":
+        return None
+    entry = state.trace[-1]
+    return {
+        "document_id": entry.action_input.get("document_id"),
+        "query": entry.action_input.get("query"),
+        "constraint_progress": bool(entry.constraint_changes),
+        "new_supporting_fact_ids": [
+            fact.id for fact in entry.new_facts if fact.supports_constraints
+        ],
+        "resolved_entity_keys": sorted(entry.resolved_entities),
+    }
 
 
 def _materialize_initialization(proposal: InitializationProposal) -> Initialization:
