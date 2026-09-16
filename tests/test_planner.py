@@ -13,6 +13,7 @@ from app.research.schemas import (
     Fact,
     LocateAction,
     OpenAction,
+    Passage,
     SearchAction,
     Target,
 )
@@ -52,6 +53,21 @@ class FakeDocumentOpener:
             content_type="text/html",
             local_path=".deepresearch/documents/mock-document/content.txt",
         )
+
+
+class FakeDocumentRetriever:
+    async def retrieve(self, *, document: DocumentRef, goal: str, query: str) -> list[Passage]:
+        return [
+            Passage(
+                id=f"{document.id}:chunk:0",
+                document_id=document.id,
+                text="Relevant passage",
+                start_char=0,
+                end_char=16,
+                bm25_score=1.0,
+                rank=1,
+            )
+        ]
 
 
 def test_llm_planner_initializes_with_a_structured_contract() -> None:
@@ -116,6 +132,15 @@ def test_llm_planner_sends_a_compact_state_without_fact_passages() -> None:
                 snippet="Search snippet",
             )
         ],
+        located_passages=[
+            Passage(
+                id="doc-1:chunk:0",
+                document_id="doc-1",
+                text="This passage must not reach the planner",
+                start_char=0,
+                end_char=40,
+            )
+        ],
     )
 
     asyncio.run(planner.next_action(state))
@@ -125,6 +150,7 @@ def test_llm_planner_sends_a_compact_state_without_fact_passages() -> None:
     assert "Short summary" in context
     assert "Search result title" in context
     assert hidden_passage not in context
+    assert "This passage must not reach the planner" not in context
 
 
 def test_fake_llm_client_drives_the_phase_2_graph_loop() -> None:
@@ -148,6 +174,7 @@ def test_fake_llm_client_drives_the_phase_2_graph_loop() -> None:
         LLMPlanner(client),
         FakeSearchGateway(),
         FakeDocumentOpener(),
+        FakeDocumentRetriever(),
     )
 
     result = asyncio.run(

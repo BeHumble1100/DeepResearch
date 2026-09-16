@@ -7,10 +7,11 @@ from typing import TypedDict
 from langgraph.graph import END, START, StateGraph
 
 from .planner import Planner
-from .schemas import Action, AnswerAction, OpenAction, SearchAction
+from .schemas import Action, AnswerAction, LocateAction, OpenAction, SearchAction
 from .state import ResearchState
 from app.tools.document import DocumentOpener
 from app.tools.search import SearchGateway
+from app.tools.retrieval import DocumentRetriever
 
 
 class GraphState(TypedDict):
@@ -22,6 +23,7 @@ def build_research_graph(
     planner: Planner,
     search_gateway: SearchGateway,
     document_opener: DocumentOpener,
+    document_retriever: DocumentRetriever,
 ):
     """Build the minimal research loop with injected search and document boundaries."""
 
@@ -80,6 +82,30 @@ def build_research_graph(
             )
         }
 
+    async def locate(state: GraphState) -> dict[str, ResearchState]:
+        research = state["research"]
+        action = state["action"]
+        if not isinstance(action, LocateAction):
+            raise ValueError("Locate node requires a LocateAction.")
+        document = next((item for item in research.documents if item.id == action.document_id), None)
+        if document is None:
+            raise ValueError("LocateAction document_id must refer to an opened document.")
+        passages = await document_retriever.retrieve(
+            document=document,
+            goal=action.goal,
+            query=action.query,
+        )
+        return {
+            "research": research.model_copy(
+                update={
+                    "current_goal": action.goal,
+                    "located_passages": passages,
+                    "step_count": research.step_count + 1,
+                    "status": "planning",
+                }
+            )
+        }
+
     def propose_answer(state: GraphState) -> dict[str, ResearchState]:
         research = state["research"]
         action = state["action"]
@@ -112,8 +138,6 @@ def build_research_graph(
         action = state["action"]
         if action is None:
             raise ValueError("Planner must return an action before routing.")
-        if action.type == "locate":
-            raise ValueError("LOCATE is not enabled until Phase 5.")
         return action.type
 
     graph = StateGraph(GraphState)
@@ -122,6 +146,7 @@ def build_research_graph(
     graph.add_node("plan", plan)
     graph.add_node("search", search)
     graph.add_node("open", open_document)
+    graph.add_node("locate", locate)
     graph.add_node("answer", propose_answer)
     graph.add_node("finish", finish)
     graph.add_node("exhausted", exhaust_budget)
@@ -131,10 +156,11 @@ def build_research_graph(
     graph.add_conditional_edges(
         "plan",
         route_action,
-        {"search": "search", "open": "open", "answer": "answer"},
+        {"search": "search", "open": "open", "locate": "locate", "answer": "answer"},
     )
     graph.add_edge("search", "budget")
     graph.add_edge("open", "budget")
+    graph.add_edge("locate", "budget")
     graph.add_edge("answer", "finish")
     graph.add_edge("finish", END)
     graph.add_edge("exhausted", END)

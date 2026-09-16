@@ -16,6 +16,10 @@ class Settings(BaseSettings):
     searxng_max_results: int = Field(default=10, gt=0)
     document_timeout_seconds: float = Field(default=20, gt=0)
     document_store_dir: Path = Path(".deepresearch/documents")
+    retrieval_chunk_size_chars: int = Field(default=1200, gt=0)
+    retrieval_chunk_overlap_chars: int = Field(default=200, ge=0)
+    retrieval_bm25_top_k: int = Field(default=8, gt=0)
+    retrieval_top_n: int = Field(default=3, gt=0)
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 

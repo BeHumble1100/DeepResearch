@@ -15,6 +15,7 @@ from .schemas import (
     AnswerAction,
     Constraint,
     OpenAction,
+    LocateAction,
     SearchAction,
     Target,
 )
@@ -50,7 +51,13 @@ class MockPlanner:
                 goal="Inspect the first discovered source.",
                 url=result.url,
             )
-        if state.documents:
+        if state.documents and not state.located_passages:
+            return LocateAction(
+                goal="Locate the most relevant passages in the opened source.",
+                document_id=state.documents[0].id,
+                query=state.question,
+            )
+        if state.located_passages:
             return AnswerAction(
                 answer="Mock answer",
                 supporting_fact_ids=[],

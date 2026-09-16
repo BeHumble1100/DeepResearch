@@ -68,6 +68,24 @@ class QueryRewrite(BaseModel):
     queries: list[str] = Field(min_length=1)
 
 
+class Passage(BaseModel):
+    """A bounded passage selected from one locally stored document."""
+
+    id: str
+    document_id: str
+    text: str
+    start_char: int = Field(ge=0)
+    end_char: int = Field(gt=0)
+    bm25_score: float | None = None
+    rank: int | None = None
+
+
+class PassageRanking(BaseModel):
+    """Structured LLM output that ranks only supplied candidate passage IDs."""
+
+    passage_ids: list[str] = Field(min_length=1)
+
+
 class SearchAction(BaseModel):
     type: Literal["search"] = "search"
     goal: str

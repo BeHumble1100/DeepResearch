@@ -128,12 +128,3 @@ def _extract_pdf(content: bytes) -> tuple[str | None, str]:
     except PdfReadError as error:
         raise DocumentOpenError("PDF could not be parsed.") from error
     return metadata_title, text
-
-    def open(self, *, url: str) -> DocumentRef:
-        return DocumentRef(
-            id="mock-document",
-            url=url,
-            title="Mock source",
-            content_type="text/html",
-            summary="Stub document; no network fetch or parsing was performed.",
-        )

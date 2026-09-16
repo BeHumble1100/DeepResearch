@@ -4,7 +4,7 @@ import pytest
 
 from app.research.graph import build_research_graph
 from app.research.planner import MockPlanner
-from app.research.schemas import OpenAction, SearchResult
+from app.research.schemas import OpenAction, Passage, SearchResult
 from app.research.state import ResearchState
 
 
@@ -25,8 +25,28 @@ class FakeDocumentOpener:
         )
 
 
+class FakeDocumentRetriever:
+    async def retrieve(self, *, document, goal: str, query: str) -> list[Passage]:
+        return [
+            Passage(
+                id=f"{document.id}:chunk:0",
+                document_id=document.id,
+                text="Relevant passage",
+                start_char=0,
+                end_char=16,
+                bm25_score=1.0,
+                rank=1,
+            )
+        ]
+
+
 def make_graph(planner: MockPlanner) -> object:
-    return build_research_graph(planner, FakeSearchGateway(), FakeDocumentOpener())
+    return build_research_graph(
+        planner,
+        FakeSearchGateway(),
+        FakeDocumentOpener(),
+        FakeDocumentRetriever(),
+    )
 
 
 def test_mock_question_moves_through_search_open_and_answer() -> None:
@@ -42,10 +62,11 @@ def test_mock_question_moves_through_search_open_and_answer() -> None:
     assert research.target is not None
     assert research.target.description == "Who wrote this work?"
     assert research.status == "completed"
-    assert research.step_count == 3
+    assert research.step_count == 4
     assert research.executed_queries == ["Who wrote this work?"]
     assert research.visited_urls == ["https://example.com/mock-source"]
     assert len(research.documents) == 1
+    assert research.located_passages[0].text == "Relevant passage"
     assert research.answer == "Mock answer"
 
 
