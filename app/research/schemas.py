@@ -54,6 +54,14 @@ class DocumentRef(BaseModel):
     summary: str | None = None
 
 
+class SearchResult(BaseModel):
+    """A candidate resource returned by a search action."""
+
+    url: str
+    title: str | None = None
+    snippet: str | None = None
+
+
 class SearchAction(BaseModel):
     type: Literal["search"] = "search"
     goal: str
@@ -84,3 +92,9 @@ Action = Annotated[
     SearchAction | OpenAction | LocateAction | AnswerAction,
     Field(discriminator="type"),
 ]
+
+
+class ActionDecision(BaseModel):
+    """One structured next-action proposal from the planner."""
+
+    action: Action
