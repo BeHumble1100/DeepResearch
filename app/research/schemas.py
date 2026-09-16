@@ -38,6 +38,8 @@ class Fact(BaseModel):
     object: str | None = None
     source_url: str
     document_id: str | None = None
+    passage_id: str | None = None
+    evidence_kind: Literal["open", "locate"] | None = None
     passage: str
     confidence: float = Field(ge=0, le=1)
     supports_constraints: list[str] = Field(default_factory=list)
@@ -84,6 +86,32 @@ class PassageRanking(BaseModel):
     """Structured LLM output that ranks only supplied candidate passage IDs."""
 
     passage_ids: list[str] = Field(min_length=1)
+
+
+class ConstraintEvidence(BaseModel):
+    """One extracted fact's relationship to a known research constraint."""
+
+    constraint_id: str
+    status: Literal["supported", "contradicted"]
+
+
+class ExtractedFact(BaseModel):
+    """A fact candidate grounded in one supplied, bounded passage."""
+
+    statement: str
+    subject: str | None = None
+    predicate: str | None = None
+    object: str | None = None
+    confidence: float = Field(ge=0, le=1)
+    passage_id: str
+    constraint_evidence: list[ConstraintEvidence] = Field(default_factory=list)
+
+
+class FactExtraction(BaseModel):
+    """Structured output returned by a fact extractor for bounded source passages."""
+
+    facts: list[ExtractedFact] = Field(default_factory=list)
+    resolved_entities: dict[str, str] = Field(default_factory=dict)
 
 
 class SearchAction(BaseModel):

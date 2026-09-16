@@ -9,6 +9,8 @@ from langgraph.graph import END, START, StateGraph
 from .planner import Planner
 from .schemas import Action, AnswerAction, LocateAction, OpenAction, SearchAction
 from .state import ResearchState
+from .evidence import FactExtractor, apply_fact_extraction, opening_passage
+from .guard import AnswerGuard
 from app.tools.document import DocumentOpener
 from app.tools.search import SearchGateway
 from app.tools.retrieval import DocumentRetriever
@@ -24,8 +26,14 @@ def build_research_graph(
     search_gateway: SearchGateway,
     document_opener: DocumentOpener,
     document_retriever: DocumentRetriever,
+    fact_extractor: FactExtractor,
+    answer_guard: AnswerGuard,
+    *,
+    fact_extraction_open_max_chars: int = 4000,
 ):
     """Build the minimal research loop with injected search and document boundaries."""
+    if fact_extraction_open_max_chars <= 0:
+        raise ValueError("Fact extraction opening length must be positive.")
 
     async def initialize(state: GraphState) -> dict[str, ResearchState]:
         research = state["research"]
@@ -70,13 +78,28 @@ def build_research_graph(
         if action.url not in known_urls:
             raise ValueError("OpenAction URL must come from a prior search result.")
         document = await document_opener.open(url=action.url)
+        passage = await opening_passage(
+            document, max_chars=fact_extraction_open_max_chars
+        )
+        extraction = await fact_extractor.extract(
+            document=document,
+            passages=[passage],
+            constraints=research.constraints,
+        )
+        updated = apply_fact_extraction(
+            research,
+            document=document,
+            passages=[passage],
+            extraction=extraction,
+            evidence_kind="open",
+        )
         return {
-            "research": research.model_copy(
+            "research": updated.model_copy(
                 update={
                     "current_goal": action.goal,
-                    "documents": [*research.documents, document],
-                    "visited_urls": [*research.visited_urls, action.url],
-                    "step_count": research.step_count + 1,
+                    "documents": [*updated.documents, document],
+                    "visited_urls": [*updated.visited_urls, action.url],
+                    "step_count": updated.step_count + 1,
                     "status": "planning",
                 }
             )
@@ -95,12 +118,24 @@ def build_research_graph(
             goal=action.goal,
             query=action.query,
         )
+        extraction = await fact_extractor.extract(
+            document=document,
+            passages=passages,
+            constraints=research.constraints,
+        )
+        updated = apply_fact_extraction(
+            research,
+            document=document,
+            passages=passages,
+            extraction=extraction,
+            evidence_kind="locate",
+        )
         return {
-            "research": research.model_copy(
+            "research": updated.model_copy(
                 update={
                     "current_goal": action.goal,
                     "located_passages": passages,
-                    "step_count": research.step_count + 1,
+                    "step_count": updated.step_count + 1,
                     "status": "planning",
                 }
             )
@@ -127,6 +162,20 @@ def build_research_graph(
             raise ValueError("Cannot finish without an answer proposal.")
         return {"research": research.model_copy(update={"status": "completed"})}
 
+    def guard_answer(state: GraphState) -> dict[str, ResearchState]:
+        research = state["research"]
+        action = state["action"]
+        if not isinstance(action, AnswerAction):
+            raise ValueError("Answer guard requires an AnswerAction.")
+        result = answer_guard.check(research=research, proposal=action)
+        if result.accepted:
+            return {"research": research}
+        return {
+            "research": research.model_copy(
+                update={"answer": None, "status": "planning"}
+            )
+        }
+
     def exhaust_budget(state: GraphState) -> dict[str, ResearchState]:
         research = state["research"]
         return {"research": research.model_copy(update={"status": "budget_exhausted"})}
@@ -140,6 +189,13 @@ def build_research_graph(
             raise ValueError("Planner must return an action before routing.")
         return action.type
 
+    def route_answer_guard(state: GraphState) -> str:
+        research = state["research"]
+        action = state["action"]
+        if not isinstance(action, AnswerAction):
+            raise ValueError("Answer guard requires an AnswerAction.")
+        return "accept" if answer_guard.check(research=research, proposal=action).accepted else "reject"
+
     graph = StateGraph(GraphState)
     graph.add_node("initialize", initialize)
     graph.add_node("budget", lambda state: {})
@@ -148,6 +204,7 @@ def build_research_graph(
     graph.add_node("open", open_document)
     graph.add_node("locate", locate)
     graph.add_node("answer", propose_answer)
+    graph.add_node("guard", guard_answer)
     graph.add_node("finish", finish)
     graph.add_node("exhausted", exhaust_budget)
     graph.add_edge(START, "initialize")
@@ -161,7 +218,8 @@ def build_research_graph(
     graph.add_edge("search", "budget")
     graph.add_edge("open", "budget")
     graph.add_edge("locate", "budget")
-    graph.add_edge("answer", "finish")
+    graph.add_edge("answer", "guard")
+    graph.add_conditional_edges("guard", route_answer_guard, {"accept": "finish", "reject": "budget"})
     graph.add_edge("finish", END)
     graph.add_edge("exhausted", END)
     return graph.compile()
