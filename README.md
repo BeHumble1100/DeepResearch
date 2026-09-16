@@ -1,0 +1,3 @@
+# DeepResearch
+
+Minimal Python project.
