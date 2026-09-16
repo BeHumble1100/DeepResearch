@@ -11,6 +11,7 @@ from .schemas import Action, AnswerAction, LocateAction, OpenAction, SearchActio
 from .state import ResearchState
 from .evidence import FactExtractor, apply_fact_extraction, opening_passage
 from .guard import AnswerGuard
+from .trace import append_action_trace, append_event_trace
 from app.tools.document import DocumentOpener
 from app.tools.search import SearchGateway
 from app.tools.retrieval import DocumentRetriever
@@ -57,15 +58,21 @@ def build_research_graph(
         if not isinstance(action, SearchAction):
             raise ValueError("Search node requires a SearchAction.")
         results = await search_gateway.search(goal=action.goal, query=action.query)
+        updated = research.model_copy(
+            update={
+                "current_goal": action.goal,
+                "executed_queries": [*research.executed_queries, action.query],
+                "search_results": results,
+                "step_count": research.step_count + 1,
+                "status": "planning",
+            }
+        )
         return {
-            "research": research.model_copy(
-                update={
-                    "current_goal": action.goal,
-                    "executed_queries": [*research.executed_queries, action.query],
-                    "search_results": results,
-                    "step_count": research.step_count + 1,
-                    "status": "planning",
-                }
+            "research": append_action_trace(
+                research,
+                updated,
+                action=action,
+                observation_summary=f"Search returned {len(results)} normalized results.",
             )
         }
 
@@ -93,15 +100,24 @@ def build_research_graph(
             extraction=extraction,
             evidence_kind="open",
         )
+        completed = updated.model_copy(
+            update={
+                "current_goal": action.goal,
+                "documents": [*updated.documents, document],
+                "visited_urls": [*updated.visited_urls, action.url],
+                "step_count": updated.step_count + 1,
+                "status": "planning",
+            }
+        )
         return {
-            "research": updated.model_copy(
-                update={
-                    "current_goal": action.goal,
-                    "documents": [*updated.documents, document],
-                    "visited_urls": [*updated.visited_urls, action.url],
-                    "step_count": updated.step_count + 1,
-                    "status": "planning",
-                }
+            "research": append_action_trace(
+                research,
+                completed,
+                action=action,
+                observation_summary=(
+                    f"Opened {document.content_type} document {document.id} and extracted facts "
+                    "from its bounded opening excerpt."
+                ),
             )
         }
 
@@ -130,14 +146,22 @@ def build_research_graph(
             extraction=extraction,
             evidence_kind="locate",
         )
+        completed = updated.model_copy(
+            update={
+                "current_goal": action.goal,
+                "located_passages": passages,
+                "step_count": updated.step_count + 1,
+                "status": "planning",
+            }
+        )
         return {
-            "research": updated.model_copy(
-                update={
-                    "current_goal": action.goal,
-                    "located_passages": passages,
-                    "step_count": updated.step_count + 1,
-                    "status": "planning",
-                }
+            "research": append_action_trace(
+                research,
+                completed,
+                action=action,
+                observation_summary=(
+                    f"Located {len(passages)} relevant passages in document {document.id}."
+                ),
             )
         }
 
@@ -169,16 +193,36 @@ def build_research_graph(
             raise ValueError("Answer guard requires an AnswerAction.")
         result = answer_guard.check(research=research, proposal=action)
         if result.accepted:
-            return {"research": research}
+            accepted = research.model_copy(update={"status": "answer_accepted"})
+            return {
+                "research": append_action_trace(
+                    research,
+                    accepted,
+                    action=action,
+                    observation_summary="Answer guard accepted the evidence-backed proposal.",
+                )
+            }
+        rejected = research.model_copy(update={"answer": None, "status": "planning"})
         return {
-            "research": research.model_copy(
-                update={"answer": None, "status": "planning"}
+            "research": append_action_trace(
+                research,
+                rejected,
+                action=action,
+                observation_summary="Answer guard rejected the proposal: " + "; ".join(result.reasons),
             )
         }
 
     def exhaust_budget(state: GraphState) -> dict[str, ResearchState]:
         research = state["research"]
-        return {"research": research.model_copy(update={"status": "budget_exhausted"})}
+        exhausted = research.model_copy(update={"status": "budget_exhausted"})
+        return {
+            "research": append_event_trace(
+                exhausted,
+                action="budget_exhausted",
+                action_input={"max_steps": exhausted.max_steps, "step_count": exhausted.step_count},
+                observation_summary="Research step budget was exhausted.",
+            )
+        }
 
     def route_budget(state: GraphState) -> str:
         return "exhausted" if state["research"].step_count >= state["research"].max_steps else "plan"
@@ -190,11 +234,7 @@ def build_research_graph(
         return action.type
 
     def route_answer_guard(state: GraphState) -> str:
-        research = state["research"]
-        action = state["action"]
-        if not isinstance(action, AnswerAction):
-            raise ValueError("Answer guard requires an AnswerAction.")
-        return "accept" if answer_guard.check(research=research, proposal=action).accepted else "reject"
+        return "accept" if state["research"].status == "answer_accepted" else "reject"
 
     graph = StateGraph(GraphState)
     graph.add_node("initialize", initialize)
