@@ -11,6 +11,9 @@ from app.research.planner import Initialization, InitializationProposal, LLMPlan
 from app.research.schemas import (
     ActionDecision,
     AnswerAction,
+    CandidateScope,
+    Constraint,
+    ConstraintEvidence,
     ConstraintProposal,
     DocumentRef,
     Fact,
@@ -45,7 +48,14 @@ class FakeLLMClient:
 
 
 class FakeSearchGateway:
-    async def search(self, *, goal: str, query: str) -> list[SearchResult]:
+    async def search(
+        self,
+        *,
+        goal: str,
+        query: str,
+        unresolved_required_constraints=None,
+        resolved_entities=None,
+    ) -> list[SearchResult]:
         return [SearchResult(url="https://example.com/mock-source", title="Mock source")]
 
 
@@ -186,8 +196,8 @@ def test_llm_planner_sends_a_compact_state_without_fact_passages() -> None:
     assert hidden_passage not in context
     assert "This passage must not reach the planner" not in context
     assert "Resolve the author" in context
-    assert "SEARCH only" in client.calls[0][0][0]["content"]
-    assert "Fact count alone is not research progress" in client.calls[0][0][0]["content"]
+    assert "Action policy" in client.calls[0][0][0]["content"]
+    assert "Research progress is not the number of collected facts" in client.calls[0][0][0]["content"]
     compact_context = json.loads(context)
     assert compact_context["recent_actions"]["last_locate_outcome"] == {
         "document_id": "doc-1",
@@ -196,6 +206,32 @@ def test_llm_planner_sends_a_compact_state_without_fact_passages() -> None:
         "new_supporting_fact_ids": [],
         "resolved_entity_keys": [],
     }
+
+
+def test_llm_planner_includes_deterministic_candidate_scope_summary() -> None:
+    client = FakeLLMClient([ActionDecision(action=SearchAction(goal="Find", query="Question"))])
+    state = ResearchState(
+        question="Question",
+        candidate_scopes=[CandidateScope(id="cand_1", label="Candidate A")],
+        facts=[
+            Fact(
+                id="fact-1",
+                statement="Candidate A meets a requirement.",
+                source_url="https://example.com",
+                passage="Hidden passage",
+                confidence=0.8,
+                evidence_scope_id="cand_1",
+                constraint_evidence=[ConstraintEvidence(constraint_id="c1", status="supported")],
+            )
+        ],
+    )
+
+    asyncio.run(LLMPlanner(client).next_action(state))
+
+    context = json.loads(client.calls[0][0][1]["content"])
+    assert context["candidate_scopes"] == [
+        {"id": "cand_1", "label": "Candidate A", "constraint_evidence": {"c1": "supported"}}
+    ]
 
 
 def test_fake_llm_client_drives_the_phase_2_graph_loop() -> None:

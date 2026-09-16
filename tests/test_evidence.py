@@ -72,13 +72,16 @@ def test_extraction_materializes_trusted_provenance_and_updates_state() -> None:
     assert fact.passage_id == "doc-1:chunk:0"
     assert fact.evidence_kind == "locate"
     assert fact.passage == _passage().text
-    assert updated.constraints[0].status == "supported"
-    assert updated.constraints[0].supporting_fact_ids == [fact.id]
+    assert updated.constraints[0].status == "unknown"
+    assert updated.constraints[0].supporting_fact_ids == []
+    assert fact.constraint_evidence == [
+        ConstraintEvidence(constraint_id="degree", status="supported")
+    ]
     assert updated.resolved_entities == {"author": "Ada"}
     assert updated.resolved_entity_provenance["author"].passage_id == "doc-1:chunk:0"
 
 
-def test_contradiction_takes_precedence_and_existing_entities_are_not_overwritten() -> None:
+def test_local_contradiction_does_not_overwrite_global_status_and_entities_are_not_overwritten() -> None:
     state = ResearchState(
         question="Question",
         constraints=[Constraint(id="c-1", description="Required fact", status="supported")],
@@ -106,9 +109,41 @@ def test_contradiction_takes_precedence_and_existing_entities_are_not_overwritte
         ),
     )
 
-    assert updated.constraints[0].status == "contradicted"
+    assert updated.constraints[0].status == "supported"
+    assert updated.facts[0].constraint_evidence == [
+        ConstraintEvidence(constraint_id="c-1", status="contradicted")
+    ]
     assert updated.resolved_entities == {"author": "Ada"}
     assert updated.resolved_entity_provenance == {}
+
+
+def test_fact_inherits_candidate_scope_from_the_opened_or_located_document() -> None:
+    state = ResearchState(
+        question="Question", constraints=[Constraint(id="c-1", description="Requirement")]
+    )
+    document = _document().model_copy(update={"evidence_scope_id": "cand_1"})
+
+    updated = apply_fact_extraction(
+        state,
+        document=document,
+        passages=[_passage()],
+        evidence_kind="locate",
+        extraction=FactExtraction(
+            facts=[
+                ExtractedFact(
+                    statement="Explicit candidate evidence.",
+                    confidence=0.8,
+                    passage_id="doc-1:chunk:0",
+                    constraint_evidence=[
+                        ConstraintEvidence(constraint_id="c-1", status="contradicted")
+                    ],
+                )
+            ]
+        ),
+    )
+
+    assert updated.facts[0].evidence_scope_id == "cand_1"
+    assert updated.constraints[0].status == "unknown"
 
 
 def test_extraction_rejects_unknown_passage_or_constraint() -> None:
@@ -180,7 +215,7 @@ def test_llm_extractor_receives_only_supplied_passages() -> None:
     assert "Ada graduated" in payload
     assert "c-1" in payload
     assert "atomic facts" in client.messages[0]["content"]
-    assert "within that same passage" in client.messages[0]["content"]
+    assert "local reference only within the same" in client.messages[0]["content"]
 
 
 def test_llm_extractor_skips_an_empty_passage_set() -> None:

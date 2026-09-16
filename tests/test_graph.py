@@ -6,6 +6,8 @@ from app.research.planner import MockPlanner
 from app.research.guard import AnswerGuard
 from app.research.schemas import (
     AnswerAction,
+    ConstraintEvidence,
+    Constraint,
     ExtractedFact,
     FactExtraction,
     LocateAction,
@@ -18,7 +20,14 @@ from app.research.state import ResearchState
 
 
 class FakeSearchGateway:
-    async def search(self, *, goal: str, query: str) -> list[SearchResult]:
+    async def search(
+        self,
+        *,
+        goal: str,
+        query: str,
+        unresolved_required_constraints=None,
+        resolved_entities=None,
+    ) -> list[SearchResult]:
         return [SearchResult(url="https://example.com/mock-source", title="Mock source")]
 
 
@@ -163,7 +172,14 @@ class TwoSearchThenOpenPlanner(MockPlanner):
 
 
 class TwoResultSearchGateway:
-    async def search(self, *, goal: str, query: str) -> list[SearchResult]:
+    async def search(
+        self,
+        *,
+        goal: str,
+        query: str,
+        unresolved_required_constraints=None,
+        resolved_entities=None,
+    ) -> list[SearchResult]:
         return [SearchResult(url=f"https://example.com/{query}", title=query)]
 
 
@@ -261,8 +277,15 @@ def test_rejected_answer_returns_to_planner() -> None:
 
 
 class ScriptedPlanner(MockPlanner):
-    def __init__(self, actions):
+    def __init__(self, actions, *, constraints=None):
         self._actions = actions
+        self._constraints = constraints
+
+    async def initialize(self, question: str):
+        initialization = await super().initialize(question)
+        if self._constraints is None:
+            return initialization
+        return initialization.model_copy(update={"constraints": self._constraints})
 
     async def next_action(self, state: ResearchState):
         return self._actions.pop(0)
@@ -272,8 +295,33 @@ class CountingSearchGateway(FakeSearchGateway):
     def __init__(self) -> None:
         self.queries: list[str] = []
 
-    async def search(self, *, goal: str, query: str) -> list[SearchResult]:
+    async def search(
+        self,
+        *,
+        goal: str,
+        query: str,
+        unresolved_required_constraints=None,
+        resolved_entities=None,
+    ) -> list[SearchResult]:
         self.queries.append(query)
+        return await super().search(goal=goal, query=query)
+
+
+class ContextSearchGateway(FakeSearchGateway):
+    def __init__(self) -> None:
+        self.unresolved_required_constraints = None
+        self.resolved_entities = None
+
+    async def search(
+        self,
+        *,
+        goal: str,
+        query: str,
+        unresolved_required_constraints=None,
+        resolved_entities=None,
+    ) -> list[SearchResult]:
+        self.unresolved_required_constraints = unresolved_required_constraints
+        self.resolved_entities = resolved_entities
         return await super().search(goal=goal, query=query)
 
 
@@ -319,6 +367,38 @@ def test_duplicate_search_is_rejected_without_calling_gateway() -> None:
         "SEARCH query exactly duplicates an earlier query in this research run."
     )
     assert research.step_count == 3
+
+
+def test_search_passes_only_unresolved_constraints_and_entities_to_gateway() -> None:
+    gateway = ContextSearchGateway()
+    constraints = [
+        Constraint(id="c1", description="Unresolved", status="unknown"),
+        Constraint(id="c2", description="Supported", status="supported"),
+        Constraint(id="c3", description="Optional", required=False),
+    ]
+    graph = make_graph(
+        ScriptedPlanner([SearchAction(goal="Find", query="query")], constraints=constraints),
+        search_gateway=gateway,
+    )
+
+    asyncio.run(
+        graph.ainvoke(
+            {
+                "research": ResearchState(
+                    question="Question",
+                    max_steps=1,
+                    resolved_entities={"author": "Ada"},
+                ),
+                "action": None,
+            }
+        )
+    )
+
+    assert gateway.unresolved_required_constraints == [
+        {"id": "c1", "description": "Unresolved"},
+        {"id": "c2", "description": "Supported"},
+    ]
+    assert gateway.resolved_entities == {"author": "Ada"}
 
 
 def test_duplicate_locate_is_rejected_without_calling_retriever() -> None:
@@ -375,3 +455,123 @@ def test_answer_without_real_fact_is_rejected_before_guard() -> None:
     assert research.trace[0].validation_rejection_reason == (
         "ANSWER proposal does not cite any real supporting Fact from this research run."
     )
+
+
+class ScopedFactExtractor(FakeFactExtractor):
+    async def extract(self, *, document, passages, constraints) -> FactExtraction:
+        return FactExtraction(
+            facts=[
+                ExtractedFact(
+                    statement="The candidate satisfies the requirement.",
+                    confidence=0.9,
+                    passage_id=passages[0].id,
+                    constraint_evidence=[
+                        ConstraintEvidence(constraint_id="c1", status="supported")
+                    ],
+                )
+            ]
+        )
+
+
+def test_open_new_candidate_creates_scope_and_projects_only_after_guard_accept() -> None:
+    # The final action needs the deterministic fact ID, which is only available after OPEN.
+    # Use a planner that obtains it from state instead of predicting an opaque ID.
+    class AnswerAfterOpenPlanner(ScriptedPlanner):
+        async def next_action(self, state):
+            if not state.executed_queries:
+                return SearchAction(goal="Find", query="candidate")
+            if not state.documents:
+                return OpenAction(
+                    goal="Verify candidate",
+                    url="https://example.com/mock-source",
+                    new_candidate_label="Candidate A",
+                )
+            return AnswerAction(
+                answer="Answer",
+                supporting_fact_ids=[state.facts[0].id],
+                supporting_constraint_ids=["c1"],
+                candidate_scope_id="cand_1",
+            )
+
+    graph = build_research_graph(
+        AnswerAfterOpenPlanner([], constraints=[Constraint(id="c1", description="Requirement")]),
+        FakeSearchGateway(),
+        FakeDocumentOpener(),
+        FakeDocumentRetriever(),
+        ScopedFactExtractor(),
+        AnswerGuard(),
+    )
+    result = asyncio.run(
+        graph.ainvoke({"research": ResearchState(question="Question", max_steps=3), "action": None})
+    )
+
+    research = result["research"]
+    assert research.status == "completed"
+    assert research.candidate_scopes[0].id == "cand_1"
+    assert research.candidate_scopes[0].label == "Candidate A"
+    assert research.documents[0].evidence_scope_id == "cand_1"
+    assert research.facts[0].evidence_scope_id == "cand_1"
+    assert research.constraints[0].status == "supported"
+    created = research.trace[1].created_candidate_scope
+    assert created is not None
+    assert created.model_dump() == {
+        "id": "cand_1",
+        "label": "Candidate A",
+        "originating_document_id": "mock-document",
+    }
+
+
+def test_open_rejects_unknown_candidate_scope_without_calling_opener() -> None:
+    opener = FakeDocumentOpener()
+    graph = make_graph(
+        ScriptedPlanner(
+            [
+                SearchAction(goal="Find", query="candidate"),
+                OpenAction(
+                    goal="Verify", url="https://example.com/mock-source", candidate_scope_id="cand_99"
+                ),
+            ]
+        ),
+        document_opener=opener,
+    )
+
+    result = asyncio.run(
+        graph.ainvoke({"research": ResearchState(question="Question", max_steps=2), "action": None})
+    )
+
+    research = result["research"]
+    assert opener.opened_urls == []
+    assert research.trace[1].validation_rejection_reason == (
+        "OPEN candidate_scope_id does not refer to an existing candidate scope."
+    )
+
+
+def test_locate_reuses_the_target_documents_candidate_scope() -> None:
+    graph = build_research_graph(
+        ScriptedPlanner(
+            [
+                SearchAction(goal="Find", query="candidate"),
+                OpenAction(
+                    goal="Verify",
+                    url="https://example.com/mock-source",
+                    new_candidate_label="Candidate A",
+                ),
+                LocateAction(goal="Find evidence", document_id="mock-document", query="requirement"),
+            ],
+            constraints=[Constraint(id="c1", description="Requirement")],
+        ),
+        FakeSearchGateway(),
+        FakeDocumentOpener(),
+        FakeDocumentRetriever(),
+        ScopedFactExtractor(),
+        AnswerGuard(),
+    )
+
+    result = asyncio.run(
+        graph.ainvoke({"research": ResearchState(question="Question", max_steps=3), "action": None})
+    )
+
+    research = result["research"]
+    assert research.documents[0].evidence_scope_id == "cand_1"
+    assert research.located_passages[0].document_id == "mock-document"
+    assert {fact.evidence_scope_id for fact in research.facts} == {"cand_1"}

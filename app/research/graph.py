@@ -11,10 +11,12 @@ from .planner import Planner, _compact_state_view
 from .schemas import (
     Action,
     AnswerAction,
+    CandidateScope,
     LocateAction,
     OpenAction,
     SearchAction,
     TraceGuardResult,
+    TraceCandidateScope,
 )
 from .state import ResearchState
 from .evidence import FactExtractor, apply_fact_extraction, opening_passage
@@ -80,7 +82,17 @@ def build_research_graph(
                     reason="SEARCH query exactly duplicates an earlier query in this research run.",
                 )
             }
-        results = await search_gateway.search(goal=action.goal, query=action.query)
+        required_constraints = [
+            {"id": constraint.id, "description": constraint.description}
+            for constraint in research.constraints
+            if constraint.required
+        ]
+        results = await search_gateway.search(
+            goal=action.goal,
+            query=action.query,
+            unresolved_required_constraints=required_constraints,
+            resolved_entities=research.resolved_entities,
+        )
         updated = research.model_copy(
             update={
                 "current_goal": action.goal,
@@ -109,6 +121,16 @@ def build_research_graph(
         action = state["action"]
         if not isinstance(action, OpenAction):
             raise ValueError("Open node requires an OpenAction.")
+        scope_rejection = _validate_open_scope(research, action)
+        if scope_rejection:
+            return {
+                "research": _reject_action(
+                    research,
+                    action=action,
+                    planner_context=state.get("planner_context"),
+                    reason=scope_rejection,
+                )
+            }
         known_urls = set(research.discovered_urls)
         if action.url not in known_urls:
             return {
@@ -120,6 +142,15 @@ def build_research_graph(
                 )
             }
         document = await document_opener.open(url=action.url)
+        created_scope = None
+        if action.new_candidate_label is not None:
+            created_scope = CandidateScope(
+                id=f"cand_{len(research.candidate_scopes) + 1}",
+                label=action.new_candidate_label.strip(),
+            )
+            document = document.model_copy(update={"evidence_scope_id": created_scope.id})
+        elif action.candidate_scope_id is not None:
+            document = document.model_copy(update={"evidence_scope_id": action.candidate_scope_id})
         passage = await opening_passage(
             document, max_chars=fact_extraction_open_max_chars
         )
@@ -139,6 +170,11 @@ def build_research_graph(
             update={
                 "current_goal": action.goal,
                 "documents": [*updated.documents, document],
+                "candidate_scopes": (
+                    [*updated.candidate_scopes, created_scope]
+                    if created_scope is not None
+                    else updated.candidate_scopes
+                ),
                 "visited_urls": [*updated.visited_urls, action.url],
                 "step_count": updated.step_count + 1,
                 "status": "planning",
@@ -154,6 +190,15 @@ def build_research_graph(
                     "from its bounded opening excerpt."
                 ),
                 planner_context=state.get("planner_context"),
+                created_candidate_scope=(
+                    TraceCandidateScope(
+                        id=created_scope.id,
+                        label=created_scope.label,
+                        originating_document_id=document.id,
+                    )
+                    if created_scope is not None
+                    else None
+                ),
             )
         }
 
@@ -219,6 +264,17 @@ def build_research_graph(
         action = state["action"]
         if not isinstance(action, AnswerAction):
             raise ValueError("Answer node requires an AnswerAction.")
+        if action.candidate_scope_id is not None and action.candidate_scope_id not in {
+            scope.id for scope in research.candidate_scopes
+        }:
+            return {
+                "research": _reject_action(
+                    research,
+                    action=action,
+                    planner_context=state.get("planner_context"),
+                    reason="ANSWER candidate_scope_id does not refer to an existing candidate scope.",
+                )
+            }
         if not any(
             fact_id in {fact.id for fact in research.facts}
             for fact_id in action.supporting_fact_ids
@@ -254,7 +310,9 @@ def build_research_graph(
             raise ValueError("Answer guard requires an AnswerAction.")
         result = answer_guard.check(research=research, proposal=action)
         if result.accepted:
-            accepted = research.model_copy(update={"status": "answer_accepted"})
+            accepted = _project_accepted_constraints(research, action).model_copy(
+                update={"status": "answer_accepted"}
+            )
             return {
                 "research": append_action_trace(
                     research,
@@ -368,3 +426,40 @@ def _is_duplicate_locate(research: ResearchState, action: LocateAction) -> bool:
         and entry.action_input.get("query") == action.query
         for entry in research.trace
     )
+
+
+def _validate_open_scope(research: ResearchState, action: OpenAction) -> str | None:
+    """Validate state-owned candidate namespaces before any URL is opened."""
+    if action.candidate_scope_id is not None and action.new_candidate_label is not None:
+        return "OPEN must provide either candidate_scope_id or new_candidate_label, not both."
+    if action.new_candidate_label is not None and not action.new_candidate_label.strip():
+        return "OPEN new_candidate_label must not be blank."
+    if action.candidate_scope_id is not None and action.candidate_scope_id not in {
+        scope.id for scope in research.candidate_scopes
+    }:
+        return "OPEN candidate_scope_id does not refer to an existing candidate scope."
+    return None
+
+
+def _project_accepted_constraints(research: ResearchState, action: AnswerAction) -> ResearchState:
+    """Project only the accepted answer's scoped support into global final state."""
+    constraints = []
+    for constraint in research.constraints:
+        if not constraint.required:
+            constraints.append(constraint)
+            continue
+        supporting_fact_ids = [
+            fact.id
+            for fact in research.facts
+            if fact.evidence_scope_id == action.candidate_scope_id
+            and any(
+                relation.constraint_id == constraint.id and relation.status == "supported"
+                for relation in fact.constraint_evidence
+            )
+        ]
+        constraints.append(
+            constraint.model_copy(
+                update={"status": "supported", "supporting_fact_ids": supporting_fact_ids}
+            )
+        )
+    return research.model_copy(update={"constraints": constraints})

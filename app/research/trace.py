@@ -10,6 +10,7 @@ from .schemas import (
     ResearchTraceEntry,
     SearchResult,
     TraceGuardResult,
+    TraceCandidateScope,
     TraceSearchResult,
     TraceFact,
 )
@@ -26,6 +27,7 @@ def append_action_trace(
     search_results: list[SearchResult] | None = None,
     guard_result: TraceGuardResult | None = None,
     validation_rejection_reason: str | None = None,
+    created_candidate_scope: TraceCandidateScope | None = None,
 ) -> ResearchState:
     """Append one action record using only state deltas and compact metadata."""
     entry = ResearchTraceEntry(
@@ -51,6 +53,7 @@ def append_action_trace(
         new_facts=_new_facts(before, after),
         constraint_changes=_constraint_changes(before, after),
         resolved_entities=_entity_changes(before, after),
+        created_candidate_scope=created_candidate_scope,
     )
     return after.model_copy(update={"trace": [*after.trace, entry]})
 
@@ -95,6 +98,8 @@ def _new_facts(before: ResearchState, after: ResearchState) -> list[TraceFact]:
             passage_id=fact.passage_id,
             evidence_kind=fact.evidence_kind,
             supports_constraints=fact.supports_constraints,
+            evidence_scope_id=fact.evidence_scope_id,
+            constraint_evidence=fact.constraint_evidence,
         )
         for fact in after.facts
         if fact.id not in existing_ids

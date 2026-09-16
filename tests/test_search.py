@@ -1,4 +1,5 @@
 import asyncio
+import json
 
 import httpx
 import pytest
@@ -16,7 +17,14 @@ class FixedQueryRewriter:
     def __init__(self, queries: list[str]) -> None:
         self._queries = queries
 
-    async def rewrite(self, *, goal: str, query: str) -> list[str]:
+    async def rewrite(
+        self,
+        *,
+        goal: str,
+        query: str,
+        unresolved_required_constraints=None,
+        resolved_entities=None,
+    ) -> list[str]:
         return self._queries
 
 
@@ -159,11 +167,22 @@ def test_gateway_filters_deduplicates_and_limits_rewrites() -> None:
     assert requested_queries == ["first", "second", "third"]
 
 
-def test_llm_query_rewriter_prompt_is_goal_focused() -> None:
+def test_llm_query_rewriter_receives_compact_research_context() -> None:
     client = FakeLLMClient(QueryRewrite(queries=["author work"]))
 
-    assert asyncio.run(LLMQueryRewriter(client).rewrite(goal="Resolve author", query="work")) == [
-        "author work"
-    ]
+    assert asyncio.run(
+        LLMQueryRewriter(client).rewrite(
+            goal="Resolve author",
+            query="work",
+            unresolved_required_constraints=[{"id": "c1", "description": "Author wrote work"}],
+            resolved_entities={"author": "Ada"},
+        )
+    ) == ["author work"]
     assert "1 to 3" in client.messages[0]["content"]
-    assert "current goal" in client.messages[0]["content"]
+    assert "unresolved required constraints" in client.messages[0]["content"]
+    assert json.loads(client.messages[1]["content"]) == {
+        "goal": "Resolve author",
+        "planner_query": "work",
+        "unresolved_required_constraints": [{"id": "c1", "description": "Author wrote work"}],
+        "resolved_entities": {"author": "Ada"},
+    }

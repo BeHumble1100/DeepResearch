@@ -49,10 +49,17 @@ class LLMPassageReranker:
             {
                 "role": "system",
                 "content": (
-                    "Rank only the supplied candidate IDs by relevance to the goal and query. Do not "
-                    "answer the question, extract facts, explain, or create IDs. Return unique supplied "
-                    "IDs only in descending relevance order. Return an empty list when no candidate is "
-                    "relevant."
+                    "Rank only the supplied candidate passage IDs by their value as direct evidence "
+                    "for the current research goal and query.\n\n"
+                    "Prefer passages that directly state facts needed to verify or falsify the target "
+                    "claim, such as names, dates, relationships, titles, quotations, events, or other "
+                    "discriminating details.\n\n"
+                    "Do not rank a passage highly merely because it is topically related.\n\n"
+                    "Return only unique IDs from the supplied candidates, ordered from strongest "
+                    "direct evidence to weakest.\n\n"
+                    "Do not answer the question, extract facts, explain the ranking, or create new "
+                    "passage IDs.\n\n"
+                    "Return an empty list when none of the supplied passages provides useful evidence."
                 ),
             },
             {
