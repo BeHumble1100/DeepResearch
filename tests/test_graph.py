@@ -6,7 +6,6 @@ from app.research.graph import build_research_graph
 from app.research.planner import MockPlanner
 from app.research.schemas import OpenAction, SearchResult
 from app.research.state import ResearchState
-from app.tools.document import StubDocumentOpener
 
 
 class FakeSearchGateway:
@@ -14,8 +13,20 @@ class FakeSearchGateway:
         return [SearchResult(url="https://example.com/mock-source", title="Mock source")]
 
 
+class FakeDocumentOpener:
+    async def open(self, *, url: str):
+        from app.research.schemas import DocumentRef
+
+        return DocumentRef(
+            id="mock-document",
+            url=url,
+            content_type="text/html",
+            local_path=".deepresearch/documents/mock-document/content.txt",
+        )
+
+
 def make_graph(planner: MockPlanner) -> object:
-    return build_research_graph(planner, FakeSearchGateway(), StubDocumentOpener())
+    return build_research_graph(planner, FakeSearchGateway(), FakeDocumentOpener())
 
 
 def test_mock_question_moves_through_search_open_and_answer() -> None:

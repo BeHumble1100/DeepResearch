@@ -17,7 +17,6 @@ from app.research.schemas import (
     Target,
 )
 from app.research.state import ResearchState
-from app.tools.document import StubDocumentOpener
 from app.research.schemas import SearchResult
 
 
@@ -43,6 +42,16 @@ class FakeLLMClient:
 class FakeSearchGateway:
     async def search(self, *, goal: str, query: str) -> list[SearchResult]:
         return [SearchResult(url="https://example.com/mock-source", title="Mock source")]
+
+
+class FakeDocumentOpener:
+    async def open(self, *, url: str) -> DocumentRef:
+        return DocumentRef(
+            id="mock-document",
+            url=url,
+            content_type="text/html",
+            local_path=".deepresearch/documents/mock-document/content.txt",
+        )
 
 
 def test_llm_planner_initializes_with_a_structured_contract() -> None:
@@ -138,7 +147,7 @@ def test_fake_llm_client_drives_the_phase_2_graph_loop() -> None:
     graph = build_research_graph(
         LLMPlanner(client),
         FakeSearchGateway(),
-        StubDocumentOpener(),
+        FakeDocumentOpener(),
     )
 
     result = asyncio.run(

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -12,6 +14,8 @@ class Settings(BaseSettings):
     searxng_max_retries: int = Field(default=2, ge=0)
     searxng_retry_backoff_seconds: float = Field(default=0.25, ge=0)
     searxng_max_results: int = Field(default=10, gt=0)
+    document_timeout_seconds: float = Field(default=20, gt=0)
+    document_store_dir: Path = Path(".deepresearch/documents")
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
