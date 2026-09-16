@@ -93,6 +93,10 @@ def test_mock_question_moves_through_search_open_and_answer() -> None:
     assert len(research.documents) == 1
     assert research.located_passages[0].text == "Relevant passage"
     assert research.answer == "Mock answer"
+    assert [entry.action for entry in research.trace] == ["search", "open", "locate", "answer"]
+    assert [entry.step for entry in research.trace] == [1, 2, 3, 4]
+    assert research.trace[1].new_facts
+    assert not hasattr(research.trace[1].new_facts[0], "passage")
 
 
 class InvalidOpenPlanner(MockPlanner):
@@ -120,6 +124,7 @@ def test_loop_stops_when_the_step_budget_is_exhausted() -> None:
     assert research.status == "budget_exhausted"
     assert research.answer is None
     assert research.step_count == 2
+    assert research.trace[-1].action == "budget_exhausted"
 
 
 class RejectThenSearchPlanner(MockPlanner):
@@ -148,3 +153,6 @@ def test_rejected_answer_returns_to_planner() -> None:
     assert research.status == "budget_exhausted"
     assert research.answer is None
     assert research.executed_queries == ["Question", "Question evidence"]
+    assert research.trace[2].action == "answer"
+    assert "rejected" in research.trace[2].observation_summary
+    assert research.trace[3].action == "search"

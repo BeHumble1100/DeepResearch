@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -111,6 +111,40 @@ class FactExtraction(BaseModel):
     """Structured output returned by a fact extractor for bounded source passages."""
 
     facts: list[ExtractedFact] = Field(default_factory=list)
+    resolved_entities: dict[str, str] = Field(default_factory=dict)
+
+
+class TraceFact(BaseModel):
+    """Compact fact metadata retained in a research trace."""
+
+    id: str
+    statement: str
+    source_url: str
+    document_id: str | None = None
+    passage_id: str | None = None
+    evidence_kind: Literal["open", "locate"] | None = None
+    supports_constraints: list[str] = Field(default_factory=list)
+
+
+class ConstraintChange(BaseModel):
+    """A deterministic constraint delta caused by one research action."""
+
+    constraint_id: str
+    previous_status: Literal["unknown", "supported", "contradicted"]
+    current_status: Literal["unknown", "supported", "contradicted"]
+    added_supporting_fact_ids: list[str] = Field(default_factory=list)
+
+
+class ResearchTraceEntry(BaseModel):
+    """One compact, serializable research action record."""
+
+    step: int = Field(ge=0)
+    current_goal: str | None = None
+    action: str
+    action_input: dict[str, Any] = Field(default_factory=dict)
+    observation_summary: str
+    new_facts: list[TraceFact] = Field(default_factory=list)
+    constraint_changes: list[ConstraintChange] = Field(default_factory=list)
     resolved_entities: dict[str, str] = Field(default_factory=dict)
 
 

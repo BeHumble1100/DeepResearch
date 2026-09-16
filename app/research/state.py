@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pydantic import BaseModel, Field
 
-from .schemas import Constraint, DocumentRef, Fact, Passage, SearchResult, Target
+from .schemas import Constraint, DocumentRef, Fact, Passage, ResearchTraceEntry, SearchResult, Target
 
 
 class ResearchState(BaseModel):
@@ -23,3 +23,4 @@ class ResearchState(BaseModel):
     max_steps: int = Field(default=8, gt=0)
     answer: str | None = None
     status: str = "initialized"
+    trace: list[ResearchTraceEntry] = Field(default_factory=list)
