@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pydantic import BaseModel, Field
 
-from .schemas import Constraint, DocumentRef, Fact, Target
+from .schemas import Constraint, DocumentRef, Fact, SearchResult, Target
 
 
 class ResearchState(BaseModel):
@@ -14,6 +14,7 @@ class ResearchState(BaseModel):
     resolved_entities: dict[str, str] = Field(default_factory=dict)
     facts: list[Fact] = Field(default_factory=list)
     documents: list[DocumentRef] = Field(default_factory=list)
+    search_results: list[SearchResult] = Field(default_factory=list)
     executed_queries: list[str] = Field(default_factory=list)
     visited_urls: list[str] = Field(default_factory=list)
     current_goal: str | None = None

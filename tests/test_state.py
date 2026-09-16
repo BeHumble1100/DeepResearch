@@ -10,6 +10,7 @@ def test_research_state_starts_with_compact_empty_collections() -> None:
     assert state.status == "initialized"
     assert state.constraints == []
     assert state.facts == []
+    assert state.search_results == []
     assert state.max_steps == 8
 
 
