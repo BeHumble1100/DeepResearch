@@ -59,7 +59,7 @@ def build_research_graph(
             )
         }
 
-    def open_document(state: GraphState) -> dict[str, ResearchState]:
+    async def open_document(state: GraphState) -> dict[str, ResearchState]:
         research = state["research"]
         action = state["action"]
         if not isinstance(action, OpenAction):
@@ -67,7 +67,7 @@ def build_research_graph(
         known_urls = {result.url for result in research.search_results}
         if action.url not in known_urls:
             raise ValueError("OpenAction URL must come from a prior search result.")
-        document = document_opener.open(url=action.url)
+        document = await document_opener.open(url=action.url)
         return {
             "research": research.model_copy(
                 update={
