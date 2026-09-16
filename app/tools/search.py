@@ -39,7 +39,11 @@ class LLMQueryRewriter:
         messages: list[Message] = [
             {
                 "role": "system",
-                "content": "Rewrite the research query into concise web-search queries.",
+                "content": (
+                    "Generate 1 to 3 concise, complementary web-search queries for the current "
+                    "goal. Preserve known entities and discriminating constraints. Do not answer the "
+                    "question, explain your choices, or generate generic paraphrases."
+                ),
             },
             {"role": "user", "content": f"Goal: {goal}\nQuery: {query}"},
         ]
@@ -55,6 +59,7 @@ class SearXNGSearchGateway:
     """Queries a configured SearXNG instance without treating snippets as evidence."""
 
     _RETRIABLE_STATUS_CODES = {408, 429, 500, 502, 503, 504}
+    _MAX_REWRITTEN_QUERIES = 3
 
     def __init__(
         self,
@@ -68,7 +73,10 @@ class SearXNGSearchGateway:
         self._transport = transport
 
     async def search(self, *, goal: str, query: str) -> list[SearchResult]:
-        queries = _unique_nonempty(await self._query_rewriter.rewrite(goal=goal, query=query))
+        queries = _unique_nonempty(
+            await self._query_rewriter.rewrite(goal=goal, query=query),
+            limit=self._MAX_REWRITTEN_QUERIES,
+        )
         if not queries:
             raise SearchGatewayError("Query rewriter returned no usable queries.")
 
@@ -151,7 +159,7 @@ def _deduplicate_results(results: list[SearchResult]) -> list[SearchResult]:
     return unique
 
 
-def _unique_nonempty(queries: list[str]) -> list[str]:
+def _unique_nonempty(queries: list[str], *, limit: int | None = None) -> list[str]:
     unique: list[str] = []
     seen: set[str] = set()
     for query in queries:
@@ -159,6 +167,8 @@ def _unique_nonempty(queries: list[str]) -> list[str]:
         if normalized and normalized not in seen:
             seen.add(normalized)
             unique.append(normalized)
+            if limit is not None and len(unique) == limit:
+                break
     return unique
 
 

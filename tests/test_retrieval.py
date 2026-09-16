@@ -30,7 +30,7 @@ class FakeReranker:
         top_n: int,
     ) -> list[str]:
         self.candidates = candidates
-        return self.ranked_ids or [candidate.id for candidate in candidates]
+        return self.ranked_ids if self.ranked_ids is not None else [candidate.id for candidate in candidates]
 
 
 class FakeLLMClient:
@@ -109,6 +109,13 @@ def test_document_retriever_rejects_unknown_reranked_passage(tmp_path: Path) -> 
         asyncio.run(retriever.retrieve(document=document, goal="Find", query="source"))
 
 
+def test_document_retriever_allows_no_relevant_reranked_passages(tmp_path: Path) -> None:
+    document = make_document(tmp_path, "Relevant source text.")
+    retriever = DocumentRetriever(make_settings(tmp_path), FakeReranker([]))
+
+    assert asyncio.run(retriever.retrieve(document=document, goal="Find", query="source")) == []
+
+
 def test_llm_reranker_receives_only_bm25_candidates() -> None:
     candidates = [
         Passage(
@@ -132,3 +139,5 @@ def test_llm_reranker_receives_only_bm25_candidates() -> None:
     assert json.loads(client.messages[1]["content"])["candidates"] == [
         {"id": "doc-1:chunk:0", "text": "Candidate passage"}
     ]
+    assert "Rank only the supplied candidate IDs" in client.messages[0]["content"]
+    assert "Return an empty list" in client.messages[0]["content"]

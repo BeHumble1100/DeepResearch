@@ -48,7 +48,12 @@ class LLMPassageReranker:
         messages: list[Message] = [
             {
                 "role": "system",
-                "content": "Rank the supplied document passages for the research goal and query.",
+                "content": (
+                    "Rank only the supplied candidate IDs by relevance to the goal and query. Do not "
+                    "answer the question, extract facts, explain, or create IDs. Return unique supplied "
+                    "IDs only in descending relevance order. Return an empty list when no candidate is "
+                    "relevant."
+                ),
             },
             {
                 "role": "user",
@@ -209,6 +214,4 @@ def _select_ranked_passages(
         selected.append(candidate_by_id[passage_id].model_copy(update={"rank": len(selected) + 1}))
         if len(selected) == top_n:
             break
-    if not selected:
-        raise RetrievalError("LLM reranker returned no usable passage IDs.")
     return selected

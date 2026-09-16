@@ -14,6 +14,7 @@ from app.research.schemas import (
     Constraint,
     ConstraintEvidence,
     DocumentRef,
+    ExtractedEntity,
     ExtractedFact,
     FactExtraction,
     Passage,
@@ -59,7 +60,9 @@ def test_extraction_materializes_trusted_provenance_and_updates_state() -> None:
                     ],
                 )
             ],
-            resolved_entities={"author": "Ada"},
+            resolved_entities=[
+                ExtractedEntity(key="author", value="Ada", passage_id="doc-1:chunk:0")
+            ],
         ),
     )
 
@@ -72,6 +75,7 @@ def test_extraction_materializes_trusted_provenance_and_updates_state() -> None:
     assert updated.constraints[0].status == "supported"
     assert updated.constraints[0].supporting_fact_ids == [fact.id]
     assert updated.resolved_entities == {"author": "Ada"}
+    assert updated.resolved_entity_provenance["author"].passage_id == "doc-1:chunk:0"
 
 
 def test_contradiction_takes_precedence_and_existing_entities_are_not_overwritten() -> None:
@@ -96,12 +100,15 @@ def test_contradiction_takes_precedence_and_existing_entities_are_not_overwritte
                     ],
                 )
             ],
-            resolved_entities={"author": "Grace"},
+            resolved_entities=[
+                ExtractedEntity(key="author", value="Grace", passage_id="doc-1:chunk:0")
+            ],
         ),
     )
 
     assert updated.constraints[0].status == "contradicted"
     assert updated.resolved_entities == {"author": "Ada"}
+    assert updated.resolved_entity_provenance == {}
 
 
 def test_extraction_rejects_unknown_passage_or_constraint() -> None:
@@ -115,6 +122,21 @@ def test_extraction_rejects_unknown_passage_or_constraint() -> None:
             extraction=FactExtraction(
                 facts=[
                     ExtractedFact(statement="Claim", confidence=0.5, passage_id="not-supplied")
+                ]
+            ),
+        )
+
+
+def test_extraction_rejects_an_entity_without_supplied_passage_provenance() -> None:
+    with pytest.raises(FactExtractionError, match="unknown entity passage"):
+        apply_fact_extraction(
+            ResearchState(question="Question"),
+            document=_document(),
+            passages=[_passage()],
+            evidence_kind="open",
+            extraction=FactExtraction(
+                resolved_entities=[
+                    ExtractedEntity(key="author", value="Ada", passage_id="not-supplied")
                 ]
             ),
         )
@@ -157,3 +179,16 @@ def test_llm_extractor_receives_only_supplied_passages() -> None:
     payload = client.messages[1]["content"]
     assert "Ada graduated" in payload
     assert "c-1" in payload
+    assert "atomic facts" in client.messages[0]["content"]
+    assert "within that same passage" in client.messages[0]["content"]
+
+
+def test_llm_extractor_skips_an_empty_passage_set() -> None:
+    client = FakeLLMClient()
+
+    result = asyncio.run(
+        LLMFactExtractor(client).extract(document=_document(), passages=[], constraints=[])
+    )
+
+    assert result == FactExtraction()
+    assert client.messages == []

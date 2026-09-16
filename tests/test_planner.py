@@ -6,10 +6,11 @@ from pydantic import BaseModel
 from app.llm.client import Message
 from app.research.graph import build_research_graph
 from app.research.guard import AnswerGuard
-from app.research.planner import Initialization, LLMPlanner
+from app.research.planner import Initialization, InitializationProposal, LLMPlanner
 from app.research.schemas import (
     ActionDecision,
     AnswerAction,
+    ConstraintProposal,
     DocumentRef,
     Fact,
     LocateAction,
@@ -80,13 +81,26 @@ class FakeFactExtractor:
 
 def test_llm_planner_initializes_with_a_structured_contract() -> None:
     client = FakeLLMClient(
-        [Initialization(target=Target(description="Find an author", answer_type="person_name"))]
+        [
+            InitializationProposal(
+                target=Target(description="Find an author", answer_type="person_name"),
+                constraints=[
+                    ConstraintProposal(description=" Author wrote the work ", subject=" Author "),
+                    ConstraintProposal(description="Author wrote the work", subject="Author"),
+                    ConstraintProposal(description="Work was published", required=False),
+                ],
+            )
+        ]
     )
 
     result = asyncio.run(LLMPlanner(client).initialize("Who wrote this work?"))
 
     assert result.target.answer_type == "person_name"
-    assert client.calls[0][1] is Initialization
+    assert client.calls[0][1] is InitializationProposal
+    assert [constraint.id for constraint in result.constraints] == ["c1", "c2"]
+    assert result.constraints[0].status == "unknown"
+    assert result.constraints[0].supporting_fact_ids == []
+    assert "Do not search, answer" in client.calls[0][0][0]["content"]
 
 
 @pytest.mark.parametrize(
@@ -149,6 +163,7 @@ def test_llm_planner_sends_a_compact_state_without_fact_passages() -> None:
                 end_char=40,
             )
         ],
+        current_goal="Resolve the author",
     )
 
     asyncio.run(planner.next_action(state))
@@ -159,6 +174,8 @@ def test_llm_planner_sends_a_compact_state_without_fact_passages() -> None:
     assert "Search result title" in context
     assert hidden_passage not in context
     assert "This passage must not reach the planner" not in context
+    assert "Resolve the author" in context
+    assert "SEARCH only" in client.calls[0][0][0]["content"]
 
 
 def test_fake_llm_client_drives_the_phase_2_graph_loop() -> None:
