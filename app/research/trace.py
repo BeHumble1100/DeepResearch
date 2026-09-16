@@ -25,6 +25,7 @@ def append_action_trace(
     planner_context: dict[str, Any] | None = None,
     search_results: list[SearchResult] | None = None,
     guard_result: TraceGuardResult | None = None,
+    validation_rejection_reason: str | None = None,
 ) -> ResearchState:
     """Append one action record using only state deltas and compact metadata."""
     entry = ResearchTraceEntry(
@@ -46,6 +47,7 @@ def append_action_trace(
             action.supporting_constraint_ids if action.type == "answer" else []
         ),
         guard_result=guard_result,
+        validation_rejection_reason=validation_rejection_reason,
         new_facts=_new_facts(before, after),
         constraint_changes=_constraint_changes(before, after),
         resolved_entities=_entity_changes(before, after),

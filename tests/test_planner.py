@@ -1,4 +1,5 @@
 import asyncio
+import json
 
 import pytest
 from pydantic import BaseModel
@@ -18,6 +19,7 @@ from app.research.schemas import (
     Passage,
     SearchAction,
     Target,
+    ResearchTraceEntry,
 )
 from app.research.state import ResearchState
 from app.research.schemas import SearchResult
@@ -164,6 +166,15 @@ def test_llm_planner_sends_a_compact_state_without_fact_passages() -> None:
             )
         ],
         current_goal="Resolve the author",
+        trace=[
+            ResearchTraceEntry(
+                step=1,
+                action="locate",
+                action_input={"document_id": "doc-1", "query": "author evidence"},
+                observation_summary="No supporting evidence found.",
+                remaining_step_budget=7,
+            )
+        ],
     )
 
     asyncio.run(planner.next_action(state))
@@ -176,6 +187,15 @@ def test_llm_planner_sends_a_compact_state_without_fact_passages() -> None:
     assert "This passage must not reach the planner" not in context
     assert "Resolve the author" in context
     assert "SEARCH only" in client.calls[0][0][0]["content"]
+    assert "Fact count alone is not research progress" in client.calls[0][0][0]["content"]
+    compact_context = json.loads(context)
+    assert compact_context["recent_actions"]["last_locate_outcome"] == {
+        "document_id": "doc-1",
+        "query": "author evidence",
+        "constraint_progress": False,
+        "new_supporting_fact_ids": [],
+        "resolved_entity_keys": [],
+    }
 
 
 def test_fake_llm_client_drives_the_phase_2_graph_loop() -> None:
