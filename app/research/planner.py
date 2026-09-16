@@ -124,6 +124,10 @@ def _compact_state_view(state: ResearchState) -> str:
             }
             for document in state.documents
         ],
+        "search_results": [
+            {"url": result.url, "title": result.title, "snippet": result.snippet}
+            for result in state.search_results
+        ],
         "recent_actions": {
             "executed_queries": state.executed_queries,
             "visited_urls": state.visited_urls,
