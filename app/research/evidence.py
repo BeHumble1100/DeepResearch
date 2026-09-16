@@ -56,13 +56,22 @@ class LLMFactExtractor:
             {
                 "role": "system",
                 "content": (
-                    "Extract only atomic facts explicitly and unambiguously supported by one supplied "
-                    "passage. Each fact and resolved entity must cite exactly one supplied passage_id. "
-                    "You may resolve an explicit local reference only within that same passage. Do not "
-                    "combine passages, use outside knowledge, guess uncertain references, or infer a "
-                    "conclusion. Return empty lists when no fact or entity is explicit. Mark a constraint "
-                    "contradicted only when a passage explicitly negates it; otherwise do not mark it "
-                    "contradicted. Do not use search snippets."
+                    "Extract only atomic facts that are explicitly and unambiguously supported by "
+                    "one supplied passage.\n\n"
+                    "Every extracted fact must cite exactly one supplied passage_id.\n\n"
+                    "Do not combine evidence across passages, use outside knowledge, guess uncertain "
+                    "references, or infer a conclusion that the passage itself does not establish.\n\n"
+                    "You may resolve a clear and unambiguous local reference only within the same "
+                    "passage.\n\n"
+                    "A fact may list a constraint in supports_constraints only when that single "
+                    "passage directly provides evidence for that constraint. Mere topical relevance "
+                    "is not enough.\n\n"
+                    "Mark a constraint contradicted only when the supplied passage contains explicit "
+                    "evidence incompatible with it. Absence of evidence is not contradiction.\n\n"
+                    "Resolved entities must also be explicitly stated or unambiguously resolved within "
+                    "one supplied passage and must cite that passage_id.\n\n"
+                    "Do not use search-result snippets as evidence.\n\n"
+                    "If no explicit fact or entity can be extracted, return empty lists."
                 ),
             },
             {
@@ -115,12 +124,11 @@ def apply_fact_extraction(
     extraction: FactExtraction,
     evidence_kind: EvidenceKind,
 ) -> ResearchState:
-    """Materialize trusted provenance and apply deterministic constraint/entity updates."""
+    """Materialize trusted provenance without projecting local evidence globally."""
     passage_by_id = {passage.id: passage for passage in passages}
     constraint_by_id = {constraint.id: constraint for constraint in research.constraints}
     facts = list(research.facts)
     existing_fact_ids = {fact.id for fact in facts}
-    constraints = list(research.constraints)
     entities = dict(research.resolved_entities)
     entity_provenance = dict(research.resolved_entity_provenance)
 
@@ -149,24 +157,16 @@ def apply_fact_extraction(
             evidence_kind=evidence_kind,
             passage=passage.text,
             confidence=candidate.confidence,
-            supports_constraints=[item.constraint_id for item in candidate.constraint_evidence],
+            supports_constraints=[
+                item.constraint_id
+                for item in candidate.constraint_evidence
+                if item.status == "supported"
+            ],
+            evidence_scope_id=document.evidence_scope_id,
+            constraint_evidence=list(candidate.constraint_evidence),
         )
         facts.append(fact)
         existing_fact_ids.add(fact_id)
-        for relation in candidate.constraint_evidence:
-            index = next(
-                index for index, item in enumerate(constraints) if item.id == relation.constraint_id
-            )
-            constraint = constraints[index]
-            fact_ids = [*constraint.supporting_fact_ids, fact.id]
-            status = (
-                "contradicted"
-                if relation.status == "contradicted" or constraint.status == "contradicted"
-                else "supported"
-            )
-            constraints[index] = constraint.model_copy(
-                update={"status": status, "supporting_fact_ids": list(dict.fromkeys(fact_ids))}
-            )
 
     for entity in extraction.resolved_entities:
         passage = passage_by_id.get(entity.passage_id)
@@ -185,7 +185,6 @@ def apply_fact_extraction(
     return research.model_copy(
         update={
             "facts": facts,
-            "constraints": constraints,
             "resolved_entities": entities,
             "resolved_entity_provenance": entity_provenance,
         }

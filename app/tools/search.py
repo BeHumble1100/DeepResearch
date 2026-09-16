@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from collections.abc import Mapping
 from typing import Protocol
 from urllib.parse import urlsplit, urlunsplit
@@ -15,17 +16,38 @@ from app.research.schemas import QueryRewrite, SearchResult
 
 
 class SearchGateway(Protocol):
-    async def search(self, *, goal: str, query: str) -> list[SearchResult]: ...
+    async def search(
+        self,
+        *,
+        goal: str,
+        query: str,
+        unresolved_required_constraints: list[dict[str, str]] | None = None,
+        resolved_entities: dict[str, str] | None = None,
+    ) -> list[SearchResult]: ...
 
 
 class QueryRewriter(Protocol):
-    async def rewrite(self, *, goal: str, query: str) -> list[str]: ...
+    async def rewrite(
+        self,
+        *,
+        goal: str,
+        query: str,
+        unresolved_required_constraints: list[dict[str, str]] | None = None,
+        resolved_entities: dict[str, str] | None = None,
+    ) -> list[str]: ...
 
 
 class IdentityQueryRewriter:
     """Preserves the original query when no LLM rewriter is configured."""
 
-    async def rewrite(self, *, goal: str, query: str) -> list[str]:
+    async def rewrite(
+        self,
+        *,
+        goal: str,
+        query: str,
+        unresolved_required_constraints: list[dict[str, str]] | None = None,
+        resolved_entities: dict[str, str] | None = None,
+    ) -> list[str]:
         return [query]
 
 
@@ -35,17 +57,45 @@ class LLMQueryRewriter:
     def __init__(self, client: LLMClient) -> None:
         self._client = client
 
-    async def rewrite(self, *, goal: str, query: str) -> list[str]:
+    async def rewrite(
+        self,
+        *,
+        goal: str,
+        query: str,
+        unresolved_required_constraints: list[dict[str, str]] | None = None,
+        resolved_entities: dict[str, str] | None = None,
+    ) -> list[str]:
         messages: list[Message] = [
             {
                 "role": "system",
                 "content": (
-                    "Generate 1 to 3 concise, complementary web-search queries for the current "
-                    "goal. Preserve known entities and discriminating constraints. Do not answer the "
-                    "question, explain your choices, or generate generic paraphrases."
+                    "Generate 1 to 3 concise and complementary web-search queries for the current "
+                    "research goal.\n\n"
+                    "Use unresolved required constraints as discriminating search clues. "
+                    "Use resolved entities only as established anchors.\n\n"
+                    "Preserve exact names, dates, quoted phrases, titles, organizations, and other "
+                    "high-value identifiers when they are available.\n\n"
+                    "Each query should pursue a meaningfully different retrieval angle. Do not return "
+                    "several superficial paraphrases of the same query.\n\n"
+                    "Do not introduce an unsupported entity as if it were established fact. If a "
+                    "possible entity is only a hypothesis, phrase the query so that it verifies or "
+                    "falsifies that hypothesis.\n\n"
+                    "Do not answer the research question, explain the queries, or add commentary. "
+                    "Return only the structured query list."
                 ),
             },
-            {"role": "user", "content": f"Goal: {goal}\nQuery: {query}"},
+            {
+                "role": "user",
+                "content": json.dumps(
+                    {
+                        "goal": goal,
+                        "planner_query": query,
+                        "unresolved_required_constraints": unresolved_required_constraints or [],
+                        "resolved_entities": resolved_entities or {},
+                    },
+                    ensure_ascii=False,
+                ),
+            },
         ]
         rewrite = await self._client.structured(messages=messages, schema=QueryRewrite)
         return rewrite.queries
@@ -72,9 +122,21 @@ class SearXNGSearchGateway:
         self._query_rewriter = query_rewriter or IdentityQueryRewriter()
         self._transport = transport
 
-    async def search(self, *, goal: str, query: str) -> list[SearchResult]:
+    async def search(
+        self,
+        *,
+        goal: str,
+        query: str,
+        unresolved_required_constraints: list[dict[str, str]] | None = None,
+        resolved_entities: dict[str, str] | None = None,
+    ) -> list[SearchResult]:
         queries = _unique_nonempty(
-            await self._query_rewriter.rewrite(goal=goal, query=query),
+            await self._query_rewriter.rewrite(
+                goal=goal,
+                query=query,
+                unresolved_required_constraints=unresolved_required_constraints,
+                resolved_entities=resolved_entities,
+            ),
             limit=self._MAX_REWRITTEN_QUERIES,
         )
         if not queries:

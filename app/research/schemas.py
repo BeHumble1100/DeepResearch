@@ -28,6 +28,13 @@ class Constraint(BaseModel):
     supporting_fact_ids: list[str] = Field(default_factory=list)
 
 
+class CandidateScope(BaseModel):
+    """A state-owned evidence namespace for one candidate hypothesis."""
+
+    id: str
+    label: str
+
+
 class ConstraintProposal(BaseModel):
     """A constraint proposed by initialization before code assigns state fields."""
 
@@ -53,6 +60,8 @@ class Fact(BaseModel):
     passage: str
     confidence: float = Field(ge=0, le=1)
     supports_constraints: list[str] = Field(default_factory=list)
+    evidence_scope_id: str | None = None
+    constraint_evidence: list[ConstraintEvidence] = Field(default_factory=list)
 
 
 class DocumentRef(BaseModel):
@@ -64,6 +73,7 @@ class DocumentRef(BaseModel):
     content_type: str
     local_path: str | None = None
     summary: str | None = None
+    evidence_scope_id: str | None = None
 
 
 class SearchResult(BaseModel):
@@ -151,6 +161,16 @@ class TraceFact(BaseModel):
     passage_id: str | None = None
     evidence_kind: Literal["open", "locate"] | None = None
     supports_constraints: list[str] = Field(default_factory=list)
+    evidence_scope_id: str | None = None
+    constraint_evidence: list[ConstraintEvidence] = Field(default_factory=list)
+
+
+class TraceCandidateScope(BaseModel):
+    """The minimal scope-creation record needed to replay a hypothesis namespace."""
+
+    id: str
+    label: str
+    originating_document_id: str
 
 
 class ConstraintChange(BaseModel):
@@ -195,6 +215,7 @@ class ResearchTraceEntry(BaseModel):
     new_facts: list[TraceFact] = Field(default_factory=list)
     constraint_changes: list[ConstraintChange] = Field(default_factory=list)
     resolved_entities: dict[str, str] = Field(default_factory=dict)
+    created_candidate_scope: TraceCandidateScope | None = None
 
 
 class SearchAction(BaseModel):
@@ -207,6 +228,8 @@ class OpenAction(BaseModel):
     type: Literal["open"] = "open"
     goal: str
     url: str
+    candidate_scope_id: str | None = None
+    new_candidate_label: str | None = None
 
 
 class LocateAction(BaseModel):
@@ -221,6 +244,7 @@ class AnswerAction(BaseModel):
     answer: str
     supporting_fact_ids: list[str]
     supporting_constraint_ids: list[str]
+    candidate_scope_id: str | None = None
 
 
 Action = Annotated[

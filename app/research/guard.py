@@ -25,10 +25,19 @@ class AnswerGuard:
 
         if not _matches_basic_format(proposal.answer, research.target):
             reasons.append("Answer does not satisfy the target's basic format requirement.")
+        selected_facts = _facts_in_scope(research.facts, proposal.candidate_scope_id)
+        selected_fact_ids = {fact.id for fact in selected_facts}
+        if proposal.candidate_scope_id is not None and proposal.candidate_scope_id not in {
+            scope.id for scope in research.candidate_scopes
+        }:
+            reasons.append(f"Unknown candidate scope: {proposal.candidate_scope_id}")
+
         for fact_id in proposal.supporting_fact_ids:
             fact = facts.get(fact_id)
             if fact is None:
                 reasons.append(f"Unknown supporting fact: {fact_id}")
+            elif fact_id not in selected_fact_ids:
+                reasons.append(f"Supporting fact is outside the selected evidence scope: {fact_id}")
             elif not _is_opened_evidence(fact, documents):
                 reasons.append(f"Fact lacks opened or located document provenance: {fact_id}")
         for constraint_id in proposal.supporting_constraint_ids:
@@ -38,23 +47,29 @@ class AnswerGuard:
         for constraint in constraints.values():
             if not constraint.required:
                 continue
-            if constraint.status == "contradicted":
-                reasons.append(f"Required constraint is contradicted: {constraint.id}")
-            elif constraint.status != "supported" or not constraint.supporting_fact_ids:
-                reasons.append(f"Required constraint lacks sufficient support: {constraint.id}")
-            elif not any(
-                fact is not None
-                and constraint.id in fact.supports_constraints
-                and _is_opened_evidence(fact, documents)
-                for fact_id in constraint.supporting_fact_ids
-                if (fact := facts.get(fact_id))
-            ):
-                reasons.append(f"Required constraint lacks valid evidence: {constraint.id}")
+            scoped_relations = [
+                (fact, relation.status)
+                for fact in selected_facts
+                if _is_opened_evidence(fact, documents)
+                for relation in fact.constraint_evidence
+                if relation.constraint_id == constraint.id
+            ]
+            if any(status == "contradicted" for _, status in scoped_relations):
+                reasons.append(
+                    f"Required constraint is contradicted in the selected evidence scope: {constraint.id}"
+                )
+            elif not any(status == "supported" for _, status in scoped_relations):
+                reasons.append(f"Required constraint lacks sufficient scoped support: {constraint.id}")
             elif constraint.id not in proposal.supporting_constraint_ids:
                 reasons.append(f"Required constraint is missing from the answer proposal: {constraint.id}")
         if not proposal.supporting_fact_ids:
             reasons.append("Answer proposal has no supporting facts.")
         return GuardResult(accepted=not reasons, reasons=tuple(reasons))
+
+
+def _facts_in_scope(facts: list[Fact], evidence_scope_id: str | None) -> list[Fact]:
+    """Keep candidate and direct/global evidence modes mutually exclusive."""
+    return [fact for fact in facts if fact.evidence_scope_id == evidence_scope_id]
 
 
 def _matches_basic_format(answer: str, target: Target | None) -> bool:

@@ -85,9 +85,16 @@ class LLMPlanner:
             {
                 "role": "system",
                 "content": (
-                    "Only model the question. Do not search, answer, infer the final answer, or "
-                    "create a research plan. Return one target and atomic, independently "
-                    "verifiable constraints. Each constraint must describe one checkable condition."
+                    "Model only the research target and evidence requirements implied by the question.\n\n"
+                    "Do not search, answer the question, infer the final answer, or create a multi-step "
+                    "research plan.\n\n"
+                    "Return exactly one target and a minimal set of atomic, independently verifiable "
+                    "constraints. Each constraint must represent one checkable condition that would help "
+                    "establish the final answer.\n\n"
+                    "Avoid duplicate constraints, bundled conditions, speculative entities, and facts "
+                    "not supported by the wording of the question.\n\n"
+                    "Do not assign constraint IDs, statuses, or supporting fact IDs. Those are owned "
+                    "by deterministic code."
                 ),
             },
             {"role": "user", "content": question},
@@ -100,20 +107,52 @@ class LLMPlanner:
             {
                 "role": "system",
                 "content": (
-                "Choose exactly one next research action from the supplied state. Prioritize "
-                "unresolved required constraints and avoid repeated queries, URLs, or document "
-                "locates. Fact count alone is not research progress: prioritize newly supported "
-                "required constraints, new supporting facts, and explicitly resolved entities. If "
-                "the prior LOCATE on a document had no evidence progress, do not repeatedly LOCATE "
-                "that document; SEARCH for a new source instead. SEARCH only when a useful resource "
-                "is not yet available. When current search results include an obviously relevant "
-                "candidate for the goal, OPEN it before further searching. OPEN only a URL from "
-                "search results or known documents. Search snippets select candidates but are not "
-                "evidence. LOCATE only an opened document when document evidence is needed. Treat "
-                "an entity not supported by OPEN or LOCATE facts only as a hypothesis, and make the "
-                "next action explicitly verify it. ANSWER only when required constraints are "
-                "supported by existing facts and cite their IDs. Do not create a multi-step plan. "
-                "Return one structured SEARCH, OPEN, LOCATE, or ANSWER proposal."
+                    "Choose exactly one next research action from the supplied research state.\n\n"
+                    "Focus on the highest-value unresolved required constraint. Do not create a "
+                    "multi-step plan.\n\n"
+                    "Research progress is not the number of collected facts. Treat progress primarily "
+                    "as:\n"
+                    "- a required constraint becoming supported or contradicted by evidence,\n"
+                    "- a new supporting fact relevant to an unresolved constraint,\n"
+                    "- or an entity being explicitly resolved from opened or located evidence.\n\n"
+                    "Action policy:\n\n"
+                    "SEARCH:\n"
+                    "Use SEARCH when the current goal still lacks a useful source or candidate. "
+                    "Avoid repeating the same retrieval angle with superficial query paraphrases.\n\n"
+                    "OPEN:\n"
+                    "When current search results contain a plausibly relevant source for the current "
+                    "goal, prefer OPEN over another SEARCH so the candidate can be verified. "
+                    "Search-result titles and snippets are only for source selection and are not "
+                    "evidence.\n\n"
+                    "OPEN only URLs supplied by the research state. Never invent a URL.\n\n"
+                    "For a new candidate hypothesis, provide new_candidate_label and leave "
+                    "candidate_scope_id empty. For an existing hypothesis, use only a "
+                    "candidate_scope_id listed in candidate_scopes. Never invent a scope ID or "
+                    "provide both fields.\n\n"
+                    "LOCATE:\n"
+                    "Use LOCATE only on an already opened document when the needed evidence is likely "
+                    "to be inside that document.\n\n"
+                    "If the previous LOCATE on the same document produced no constraint progress, "
+                    "no new supporting fact, and no resolved entity, do not keep probing that document "
+                    "with minor query variations. Prefer searching for another source.\n\n"
+                    "HYPOTHESES:\n"
+                    "A specific person, work, institution, date, or other entity that has not been "
+                    "supported by OPEN or LOCATE facts is only a hypothesis.\n\n"
+                    "You may search to verify or falsify a hypothesis, but do not treat it as an "
+                    "established fact in subsequent reasoning.\n\n"
+                    "ANSWER:\n"
+                    "Propose ANSWER only when the required constraints needed for the answer are "
+                    "supported by existing evidence.\n\n"
+                    "supporting_fact_ids must contain only IDs that appear in known_facts. "
+                    "supporting_constraint_ids must contain only IDs that appear in constraints. "
+                    "Never place a constraint ID in supporting_fact_ids or a fact ID in "
+                    "supporting_constraint_ids.\n\n"
+                    "Cite only existing IDs. Do not invent facts, constraints, documents, passages, "
+                    "or URLs.\n\n"
+                    "When candidate-scoped evidence supports an answer, select its existing "
+                    "candidate_scope_id.\n\n"
+                    "Use the remaining step budget efficiently and return exactly one structured "
+                    "SEARCH, OPEN, LOCATE, or ANSWER action."
                 ),
             },
             {"role": "user", "content": _compact_state_view(state)},
@@ -144,9 +183,11 @@ def _compact_state_view(state: ResearchState) -> str:
                 "id": fact.id,
                 "statement": fact.statement,
                 "supports_constraints": fact.supports_constraints,
+                "evidence_scope_id": fact.evidence_scope_id,
             }
             for fact in state.facts
         ],
+        "candidate_scopes": _candidate_scope_summary(state),
         "available_documents": [
             {
                 "id": document.id,
@@ -176,15 +217,39 @@ def _last_locate_outcome(state: ResearchState) -> dict[str, object] | None:
     if not state.trace or state.trace[-1].action != "locate":
         return None
     entry = state.trace[-1]
+    new_supporting_fact_ids = [fact.id for fact in entry.new_facts if fact.supports_constraints]
     return {
         "document_id": entry.action_input.get("document_id"),
         "query": entry.action_input.get("query"),
-        "constraint_progress": bool(entry.constraint_changes),
-        "new_supporting_fact_ids": [
-            fact.id for fact in entry.new_facts if fact.supports_constraints
-        ],
+        "constraint_progress": bool(new_supporting_fact_ids),
+        "new_supporting_fact_ids": new_supporting_fact_ids,
         "resolved_entity_keys": sorted(entry.resolved_entities),
     }
+
+
+def _candidate_scope_summary(state: ResearchState) -> list[dict[str, object]]:
+    """Expose deterministic per-scope relation state without passage text."""
+    summary = []
+    for scope in state.candidate_scopes:
+        statuses: dict[str, set[str]] = {}
+        for fact in state.facts:
+            if fact.evidence_scope_id != scope.id:
+                continue
+            for relation in fact.constraint_evidence:
+                statuses.setdefault(relation.constraint_id, set()).add(relation.status)
+        summary.append(
+            {
+                "id": scope.id,
+                "label": scope.label,
+                "constraint_evidence": {
+                    constraint_id: (
+                        next(iter(values)) if len(values) == 1 else "mixed"
+                    )
+                    for constraint_id, values in statuses.items()
+                },
+            }
+        )
+    return summary
 
 
 def _materialize_initialization(proposal: InitializationProposal) -> Initialization:

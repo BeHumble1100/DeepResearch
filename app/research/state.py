@@ -5,6 +5,7 @@ from __future__ import annotations
 from pydantic import BaseModel, Field
 
 from .schemas import (
+    CandidateScope,
     Constraint,
     DocumentRef,
     EntityProvenance,
@@ -20,6 +21,7 @@ class ResearchState(BaseModel):
     question: str
     target: Target | None = None
     constraints: list[Constraint] = Field(default_factory=list)
+    candidate_scopes: list[CandidateScope] = Field(default_factory=list)
     resolved_entities: dict[str, str] = Field(default_factory=dict)
     resolved_entity_provenance: dict[str, EntityProvenance] = Field(default_factory=dict)
     facts: list[Fact] = Field(default_factory=list)

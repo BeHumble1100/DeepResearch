@@ -139,5 +139,5 @@ def test_llm_reranker_receives_only_bm25_candidates() -> None:
     assert json.loads(client.messages[1]["content"])["candidates"] == [
         {"id": "doc-1:chunk:0", "text": "Candidate passage"}
     ]
-    assert "Rank only the supplied candidate IDs" in client.messages[0]["content"]
+    assert "direct evidence" in client.messages[0]["content"]
     assert "Return an empty list" in client.messages[0]["content"]
