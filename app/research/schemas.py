@@ -162,6 +162,21 @@ class ConstraintChange(BaseModel):
     added_supporting_fact_ids: list[str] = Field(default_factory=list)
 
 
+class TraceSearchResult(BaseModel):
+    """A bounded search-result snapshot retained for action replay."""
+
+    url: str
+    title: str | None = None
+    snippet: str | None = None
+
+
+class TraceGuardResult(BaseModel):
+    """The deterministic guard outcome for one answer proposal."""
+
+    accepted: bool
+    reject_reasons: list[str] = Field(default_factory=list)
+
+
 class ResearchTraceEntry(BaseModel):
     """One compact, serializable research action record."""
 
@@ -170,6 +185,12 @@ class ResearchTraceEntry(BaseModel):
     action: str
     action_input: dict[str, Any] = Field(default_factory=dict)
     observation_summary: str
+    remaining_step_budget: int = Field(ge=0)
+    planner_context: dict[str, Any] | None = None
+    search_results: list[TraceSearchResult] = Field(default_factory=list)
+    answer_supporting_fact_ids: list[str] = Field(default_factory=list)
+    answer_supporting_constraint_ids: list[str] = Field(default_factory=list)
+    guard_result: TraceGuardResult | None = None
     new_facts: list[TraceFact] = Field(default_factory=list)
     constraint_changes: list[ConstraintChange] = Field(default_factory=list)
     resolved_entities: dict[str, str] = Field(default_factory=dict)

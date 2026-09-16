@@ -4,7 +4,15 @@ from __future__ import annotations
 
 from typing import Any
 
-from .schemas import Action, ConstraintChange, ResearchTraceEntry, TraceFact
+from .schemas import (
+    Action,
+    ConstraintChange,
+    ResearchTraceEntry,
+    SearchResult,
+    TraceGuardResult,
+    TraceSearchResult,
+    TraceFact,
+)
 from .state import ResearchState
 
 
@@ -14,6 +22,9 @@ def append_action_trace(
     *,
     action: Action,
     observation_summary: str,
+    planner_context: dict[str, Any] | None = None,
+    search_results: list[SearchResult] | None = None,
+    guard_result: TraceGuardResult | None = None,
 ) -> ResearchState:
     """Append one action record using only state deltas and compact metadata."""
     entry = ResearchTraceEntry(
@@ -22,6 +33,19 @@ def append_action_trace(
         action=action.type,
         action_input=action.model_dump(),
         observation_summary=observation_summary,
+        remaining_step_budget=_remaining_step_budget(after, planner_context),
+        planner_context=planner_context,
+        search_results=[
+            TraceSearchResult(url=result.url, title=result.title, snippet=result.snippet)
+            for result in (search_results or [])[:5]
+        ],
+        answer_supporting_fact_ids=(
+            action.supporting_fact_ids if action.type == "answer" else []
+        ),
+        answer_supporting_constraint_ids=(
+            action.supporting_constraint_ids if action.type == "answer" else []
+        ),
+        guard_result=guard_result,
         new_facts=_new_facts(before, after),
         constraint_changes=_constraint_changes(before, after),
         resolved_entities=_entity_changes(before, after),
@@ -35,6 +59,7 @@ def append_event_trace(
     action: str,
     action_input: dict[str, Any],
     observation_summary: str,
+    planner_context: dict[str, Any] | None = None,
 ) -> ResearchState:
     """Append a terminal control-flow event without copying evidence payloads."""
     entry = ResearchTraceEntry(
@@ -43,8 +68,18 @@ def append_event_trace(
         action=action,
         action_input=action_input,
         observation_summary=observation_summary,
+        remaining_step_budget=_remaining_step_budget(research, planner_context),
+        planner_context=planner_context,
     )
     return research.model_copy(update={"trace": [*research.trace, entry]})
+
+
+def _remaining_step_budget(
+    research: ResearchState, planner_context: dict[str, Any] | None
+) -> int:
+    if planner_context is not None:
+        return int(planner_context["remaining_step_budget"])
+    return research.max_steps - research.step_count
 
 
 def _new_facts(before: ResearchState, after: ResearchState) -> list[TraceFact]:

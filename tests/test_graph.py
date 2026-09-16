@@ -79,7 +79,10 @@ def test_mock_question_moves_through_search_open_and_answer() -> None:
 
     result = asyncio.run(
         graph.ainvoke(
-            {"research": ResearchState(question="Who wrote this work?"), "action": None}
+            {
+                "research": ResearchState(question="Who wrote this work?", max_steps=4),
+                "action": None,
+            }
         )
     )
 
@@ -95,6 +98,17 @@ def test_mock_question_moves_through_search_open_and_answer() -> None:
     assert research.answer == "Mock answer"
     assert [entry.action for entry in research.trace] == ["search", "open", "locate", "answer"]
     assert [entry.step for entry in research.trace] == [1, 2, 3, 4]
+    assert [entry.remaining_step_budget for entry in research.trace] == [4, 3, 2, 1]
+    assert research.trace[0].planner_context is not None
+    assert research.trace[0].planner_context["original_question"] == "Who wrote this work?"
+    assert [result.model_dump() for result in research.trace[0].search_results] == [
+        {"url": "https://example.com/mock-source", "title": "Mock source", "snippet": None}
+    ]
+    assert research.trace[-1].answer_supporting_fact_ids
+    assert research.trace[-1].answer_supporting_constraint_ids == []
+    assert research.trace[-1].guard_result is not None
+    assert research.trace[-1].guard_result.accepted
+    assert research.trace[-1].guard_result.reject_reasons == []
     assert research.trace[1].new_facts
     assert not hasattr(research.trace[1].new_facts[0], "passage")
 
@@ -155,4 +169,7 @@ def test_rejected_answer_returns_to_planner() -> None:
     assert research.executed_queries == ["Question", "Question evidence"]
     assert research.trace[2].action == "answer"
     assert "rejected" in research.trace[2].observation_summary
+    assert research.trace[2].guard_result is not None
+    assert not research.trace[2].guard_result.accepted
+    assert research.trace[2].guard_result.reject_reasons
     assert research.trace[3].action == "search"
