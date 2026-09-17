@@ -2,7 +2,7 @@
 
 ## Project Status
 
-DeepResearch V1 has an implemented, test-covered research harness. Phase 8 offline evaluation has not started.
+DeepResearch V1 has an implemented, test-covered research harness and a completed Phase 8 baseline evaluation.
 
 ## Completed
 
@@ -17,26 +17,35 @@ DeepResearch V1 has an implemented, test-covered research harness. Phase 8 offli
 - Prompt Pack V1 and Calibration V2.
 - Discovered-URL allow-list, recoverable action rejection, exact duplicate SEARCH/LOCATE rejection, and step-budget enforcement.
 - Candidate Evidence Scope Contract V1: deterministic candidate scopes, scoped document/fact provenance, mutually exclusive Guard modes, final-only global constraint projection, and scope-creation Trace records.
+- Phase 8 evaluation runner: failure-isolated sequential execution, per-question state/Trace artifacts, conservative normalized exact-match scoring, and trace-derived aggregate metrics.
+- Phase 9 API Layer: FastAPI `POST /research` endpoint wired to the existing production graph, with a compact terminal-state response that omits fetched document text and fact passages.
+- Recovery for source-side OPEN failures and deterministic exact duplicate-OPEN rejection.
+- Real 100-question baseline run with DeepSeek, local SearXNG, and `max_steps=10`: 96 completed runs, 4 isolated `LLMClientError` runs, and 0/100 exact or normalized matches. This is the measured baseline, not a target claim.
 
 ## Current Focus
 
-Evidence Scope Contract V1 is implemented. The next validation task is a real regression comparison for `question.jsonl` `id=1` and `id=6`.
+The baseline evaluation shows a systemic research-efficiency problem, not a finish-control bypass: every completed question exhausted its budget and no answer was Guard-accepted.
 
-The contract addresses candidate cross-contamination:
+The Candidate Evidence Scope contract addresses cross-contamination:
 
 - A candidate-local contradiction does not permanently mark a global required constraint as `contradicted`.
 - Positive evidence from different candidate scopes cannot be combined into one accepted answer.
 - Guard accepts evidence only from the selected candidate scope, or only unscoped evidence in global/direct mode.
 
+Observed Phase 8 Trace patterns requiring evidence-driven follow-up:
+
+- SEARCH is overused relative to LOCATE (563 SEARCH vs. 22 LOCATE actions across the full run).
+- The Planner repeatedly proposes already-attempted OPEN URLs despite deterministic rejection (99 duplicate-OPEN rejections).
+- Unsupported ANSWER proposals and missing scoped constraint support remain common; raising the budget from 10 to 15 steps on the same 10-question pilot did not improve accuracy.
+
 ## Next Steps
 
-1. Run real `id=1` and `id=6` regression smoke tests with the scope contract.
-2. Compare traces with prior runs, especially candidate binding, OPEN/LOCATE behavior, constraint evidence, and Guard outcomes.
-3. Begin a small Phase 8 evaluation pilot only after the regressions are understood.
-4. Build the reproducible 100-question evaluation runner and trace-derived diagnostics.
+1. Classify recurrent Planner/source-selection and evidence-progression failures from the saved Phase 8 traces.
+2. Propose a minimal, trace-backed Calibration V3 only if it addresses a repeated failure without weakening provenance or Guard rules.
+3. Replay the same pilot and full benchmark only after a validated systemic change; do not tune individual questions.
 
 ## Notes
 
 - `specs/deepresearch-v1.md` remains the V1 design baseline.
 - Implemented contracts, especially Candidate Evidence Scope V1, refine the original spec to address observed bad cases.
-- Do not report benchmark accuracy until Phase 8 produces measured results.
+- The baseline full-run artifact is an ignored experiment directory under `eval/answers/`; rerun it with `python -m eval.runner` and an explicit output directory rather than overwriting prior results.
