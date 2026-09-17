@@ -245,7 +245,11 @@ def _rank_by_lexical_relevance(
         snippet_terms = set(_relevance_terms(result.snippet or ""))
         return (2 * len(terms & title_terms)) + len(terms & snippet_terms)
 
-    return sorted(results, key=lambda result: (_source_quality(result), score(result)), reverse=True)
+    return sorted(
+        results,
+        key=lambda result: (source_quality_score(result), score(result)),
+        reverse=True,
+    )
 
 
 _LOW_QUALITY_SOURCE_HOSTS = {
@@ -261,7 +265,19 @@ _LOW_QUALITY_SOURCE_HOSTS = {
 }
 
 
-def _source_quality(result: SearchResult) -> int:
+_NON_DOCUMENTARY_MARKERS = (
+    "royalty free",
+    "stock photo",
+    "stock image",
+    "stock footage",
+    "vector",
+    "illustration",
+    "wallpaper",
+    "clipart",
+)
+
+
+def source_quality_score(result: SearchResult) -> int:
     """Keep commonly non-documentary source categories behind document candidates.
 
     This is an ordering signal, not an allow-list: every normalized URL remains
@@ -269,7 +285,15 @@ def _source_quality(result: SearchResult) -> int:
     """
 
     host = urlsplit(result.url).netloc.casefold()
-    return -1 if any(host == item or host.endswith(f".{item}") for item in _LOW_QUALITY_SOURCE_HOSTS) else 0
+    text = " ".join(part for part in (result.title, result.snippet) if part).casefold()
+    if any(host == item or host.endswith(f".{item}") for item in _LOW_QUALITY_SOURCE_HOSTS):
+        return -2
+    if any(marker in text for marker in _NON_DOCUMENTARY_MARKERS):
+        return -1
+    labels = host.split(".")
+    if "gov" in labels or "edu" in labels or "ac" in labels:
+        return 1
+    return 0
 
 
 def _relevance_terms(value: str) -> list[str]:

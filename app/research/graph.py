@@ -17,6 +17,7 @@ from .schemas import (
     SearchAction,
     TraceGuardResult,
     TraceCandidateScope,
+    SourceFailureCategory,
 )
 from .state import ResearchState
 from .evidence import FactExtractor, apply_fact_extraction, opening_passage
@@ -163,6 +164,7 @@ def build_research_graph(
                     action=action,
                     planner_context=state.get("planner_context"),
                     reason=f"OPEN document fetch or parse failed: {error}",
+                    source_failure_category=error.category,
                 )
             }
         created_scope = None
@@ -434,6 +436,7 @@ def _reject_action(
     action: Action,
     planner_context: dict[str, object] | None,
     reason: str,
+    source_failure_category: SourceFailureCategory | None = None,
 ) -> ResearchState:
     """Record a safe deterministic action rejection and return to planning."""
     rejected = research.model_copy(
@@ -450,6 +453,7 @@ def _reject_action(
         observation_summary="Rejected action validation: " + reason,
         planner_context=planner_context,
         validation_rejection_reason=reason,
+        source_failure_category=source_failure_category,
     )
 
 

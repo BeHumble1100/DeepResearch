@@ -9,6 +9,7 @@ from urllib.parse import urlsplit
 from pydantic import BaseModel, Field
 
 from app.llm.client import LLMClient, Message
+from app.tools.search import source_quality_score
 
 from .schemas import (
     Action,
@@ -126,6 +127,8 @@ class LLMPlanner:
                     "ACTION PRIORITY:\n"
                     "Before SEARCH, inspect openable_search_results and documents_requiring_locate. "
                     "If openable_search_results is non-empty, OPEN one relevant unattempted source. "
+                    "Those candidates are ordered by source quality and relevance; prefer the lowest "
+                    "source_rank when candidates are similarly relevant. "
                     "If documents_requiring_locate is non-empty and it is likely to contain the needed "
                     "evidence, LOCATE that document. Use SEARCH only when neither path can advance the "
                     "current goal, or after they have been exhausted.\n\n"
@@ -227,6 +230,7 @@ def _compact_state_view(state: ResearchState) -> str:
             "visited_urls": state.visited_urls,
             "failed_open_urls": _failed_open_urls(state),
             "failed_open_hosts": _failed_open_hosts(state),
+            "failed_open_sources": _failed_open_sources(state),
             "last_locate_outcome": _last_locate_outcome(state),
             "last_guard_rejection": _last_guard_rejection(state),
         },
@@ -270,13 +274,14 @@ def _failed_open_hosts(state: ResearchState) -> list[str]:
     for entry in state.trace:
         if entry.action != "open" or not entry.validation_rejection_reason:
             continue
-        if not entry.validation_rejection_reason.startswith(
-            "OPEN document fetch or parse failed: Document request returned HTTP "
-        ):
-            continue
-        if not (
-            "HTTP 401:" in entry.validation_rejection_reason
-            or "HTTP 403:" in entry.validation_rejection_reason
+        if entry.source_failure_category != "access_denied" and not (
+            entry.validation_rejection_reason.startswith(
+                "OPEN document fetch or parse failed: Document request returned HTTP "
+            )
+            and (
+                "HTTP 401:" in entry.validation_rejection_reason
+                or "HTTP 403:" in entry.validation_rejection_reason
+            )
         ):
             continue
         url = entry.action_input.get("url")
@@ -284,6 +289,27 @@ def _failed_open_hosts(state: ResearchState) -> list[str]:
         if host and host not in hosts:
             hosts.append(host)
     return hosts
+
+
+def _failed_open_sources(state: ResearchState) -> list[dict[str, str]]:
+    """Keep one concise failure classification per attempted source for replanning."""
+    sources: list[dict[str, str]] = []
+    for entry in state.trace:
+        url = entry.action_input.get("url")
+        if (
+            entry.action != "open"
+            or not isinstance(url, str)
+            or entry.source_failure_category is None
+        ):
+            continue
+        sources.append(
+            {
+                "url": url,
+                "host": urlsplit(url).netloc.lower(),
+                "category": entry.source_failure_category,
+            }
+        )
+    return sources
 
 
 def _last_guard_rejection(state: ResearchState) -> dict[str, object] | None:
@@ -302,7 +328,7 @@ def _last_guard_rejection(state: ResearchState) -> dict[str, object] | None:
     return None
 
 
-def _openable_search_results(state: ResearchState) -> list[dict[str, str | None]]:
+def _openable_search_results(state: ResearchState) -> list[dict[str, str | int | None]]:
     """Expose current search candidates that have not been attempted in this run."""
     attempted_urls = {
         str(entry.action_input["url"])
@@ -310,10 +336,20 @@ def _openable_search_results(state: ResearchState) -> list[dict[str, str | None]
         if entry.action == "open" and isinstance(entry.action_input.get("url"), str)
     }
     failed_hosts = set(_failed_open_hosts(state))
-    return [
-        {"url": result.url, "title": result.title, "snippet": result.snippet}
+    candidates = [
+        result
         for result in state.search_results
         if result.url not in attempted_urls and urlsplit(result.url).netloc.lower() not in failed_hosts
+    ]
+    candidates.sort(key=source_quality_score, reverse=True)
+    return [
+        {
+            "source_rank": index,
+            "url": result.url,
+            "title": result.title,
+            "snippet": result.snippet,
+        }
+        for index, result in enumerate(candidates, start=1)
     ]
 
 

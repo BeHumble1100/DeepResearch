@@ -199,6 +199,7 @@ def test_open_backend_failure_is_recoverable_and_traced() -> None:
         "OPEN document fetch or parse failed: "
         "Document request failed: https://example.com/mock-source"
     )
+    assert rejection.source_failure_category == "request_failed"
 
 
 class SearchThenRepeatedOpenPlanner(MockPlanner):

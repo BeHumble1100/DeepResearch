@@ -235,6 +235,40 @@ def test_gateway_demotes_common_non_documentary_sources_even_when_lexically_rele
     ]
 
 
+def test_gateway_prefers_institutional_sources_and_demotes_stock_material() -> None:
+    gateway = SearXNGSearchGateway(
+        make_settings(),
+        transport=httpx.MockTransport(
+            lambda request: httpx.Response(
+                200,
+                json={
+                    "results": [
+                        {
+                            "url": "https://photos.example/canada",
+                            "title": "Canada maple leaf stock photo",
+                            "content": "Royalty free stock photo of the Canadian flag.",
+                        },
+                        {
+                            "url": "https://example.gov/canada-flag",
+                            "title": "National flag of Canada",
+                            "content": "Official information about the maple leaf flag.",
+                        },
+                    ]
+                },
+            )
+        ),
+    )
+
+    results = asyncio.run(
+        gateway.search(goal="Verify Canada's maple leaf flag", query="Canada maple leaf flag")
+    )
+
+    assert [result.url for result in results] == [
+        "https://example.gov/canada-flag",
+        "https://photos.example/canada",
+    ]
+
+
 def test_llm_query_rewriter_receives_compact_research_context() -> None:
     client = FakeLLMClient(QueryRewrite(queries=["author work"]))
 

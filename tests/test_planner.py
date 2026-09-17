@@ -231,6 +231,7 @@ def test_llm_planner_sends_a_compact_state_without_fact_passages() -> None:
     assert compact_context["recent_actions"]["last_guard_rejection"] is None
     assert compact_context["openable_search_results"] == [
         {
+            "source_rank": 1,
             "url": "https://example.com/search-result",
             "title": "Search result title",
             "snippet": "Search snippet",
@@ -296,9 +297,37 @@ def test_compact_context_excludes_hosts_that_explicitly_denied_opening() -> None
     assert context["recent_actions"]["failed_open_hosts"] == ["blocked.example"]
     assert context["openable_search_results"] == [
         {
+            "source_rank": 1,
             "url": "https://available.example/source",
             "title": "Available source",
             "snippet": None,
+        }
+    ]
+
+
+def test_compact_context_exposes_structured_open_failure_categories() -> None:
+    state = ResearchState(
+        question="Question",
+        trace=[
+            ResearchTraceEntry(
+                step=1,
+                action="open",
+                action_input={"url": "https://example.com/blocked"},
+                observation_summary="Blocked.",
+                remaining_step_budget=3,
+                validation_rejection_reason="OPEN document fetch or parse failed: Document request returned HTTP 403.",
+                source_failure_category="access_denied",
+            )
+        ],
+    )
+
+    context = json.loads(_compact_state_view(state))
+
+    assert context["recent_actions"]["failed_open_sources"] == [
+        {
+            "url": "https://example.com/blocked",
+            "host": "example.com",
+            "category": "access_denied",
         }
     ]
 
