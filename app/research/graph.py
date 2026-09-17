@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import json
 from typing import TypedDict
+from urllib.parse import urlsplit
 
 from langgraph.graph import END, START, StateGraph
 
-from .planner import Planner, _compact_state_view
+from .planner import Planner, _compact_state_view, _failed_open_hosts
 from .schemas import (
     Action,
     AnswerAction,
@@ -153,6 +154,15 @@ def build_research_graph(
                     action=action,
                     planner_context=state.get("planner_context"),
                     reason="OPEN URL was not discovered by a prior SEARCH in this research run.",
+                )
+            }
+        if urlsplit(action.url).netloc.lower() in set(_failed_open_hosts(research)):
+            return {
+                "research": _reject_action(
+                    research,
+                    action=action,
+                    planner_context=state.get("planner_context"),
+                    reason="OPEN URL host was denied by an earlier document request in this research run.",
                 )
             }
         try:

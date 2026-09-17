@@ -80,8 +80,12 @@ def _requires_final_support(constraint: Constraint) -> bool:
 def _matches_basic_format(answer: str, target: Target | None) -> bool:
     if not answer.strip() or "\n" in answer:
         return False
-    if target and target.format_instruction and target.format_instruction.strip().lower() == "first name only":
-        return len(answer.strip().split()) == 1
+    if target and target.format_instruction:
+        format_instruction = target.format_instruction.strip().lower()
+        if format_instruction == "first name only":
+            return len(answer.strip().split()) == 1
+        if "full name" in format_instruction or "name only" in format_instruction:
+            return "(" not in answer and ")" not in answer
     return True
 
 

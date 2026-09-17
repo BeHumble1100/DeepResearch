@@ -29,6 +29,7 @@ from app.research.schemas import (
     SearchAction,
     Target,
     TraceGuardResult,
+    ConstraintEvidence,
     ResearchTraceEntry,
 )
 from app.research.state import ResearchState
@@ -156,6 +157,10 @@ def test_llm_planner_sends_a_compact_state_without_fact_passages() -> None:
                 source_url="https://example.com",
                 passage=hidden_passage,
                 confidence=0.8,
+                constraint_evidence=[
+                    ConstraintEvidence(constraint_id="c1", status="supported"),
+                    ConstraintEvidence(constraint_id="c2", status="contradicted"),
+                ],
             )
         ],
         documents=[
@@ -238,6 +243,10 @@ def test_llm_planner_sends_a_compact_state_without_fact_passages() -> None:
         }
     ]
     assert compact_context["documents_requiring_locate"] == []
+    assert compact_context["known_facts"][0]["constraint_evidence"] == [
+        {"constraint_id": "c1", "status": "supported"},
+        {"constraint_id": "c2", "status": "contradicted"},
+    ]
 
 
 def test_compact_context_exposes_latest_guard_rejection_until_new_evidence() -> None:
@@ -295,6 +304,14 @@ def test_compact_context_excludes_hosts_that_explicitly_denied_opening() -> None
     context = json.loads(_compact_state_view(state))
 
     assert context["recent_actions"]["failed_open_hosts"] == ["blocked.example"]
+    assert context["search_results"] == [
+        {
+            "source_rank": 1,
+            "url": "https://available.example/source",
+            "title": "Available source",
+            "snippet": None,
+        }
+    ]
     assert context["openable_search_results"] == [
         {
             "source_rank": 1,
@@ -394,6 +411,21 @@ def test_initialization_adds_target_acceptance_constraint_when_model_returns_onl
         ("c1", "research_clue", "Historical broadcast clue"),
         ("c2", "acceptance", "Identify the final role"),
     ]
+
+
+def test_initialization_prompt_keeps_target_type_out_of_acceptance_constraints() -> None:
+    client = FakeLLMClient(
+        [
+            InitializationProposal(
+                target=Target(description="Author", answer_type="person"),
+                constraints=[ConstraintProposal(description="Author wrote the work")],
+            )
+        ]
+    )
+
+    asyncio.run(LLMPlanner(client).initialize("Who wrote the work?"))
+
+    assert "Target already owns answer type and format" in client.calls[0][0][0]["content"]
 
 
 def test_fake_llm_client_drives_the_phase_2_graph_loop() -> None:
