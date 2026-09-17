@@ -304,14 +304,7 @@ def test_compact_context_excludes_hosts_that_explicitly_denied_opening() -> None
     context = json.loads(_compact_state_view(state))
 
     assert context["recent_actions"]["failed_open_hosts"] == ["blocked.example"]
-    assert context["search_results"] == [
-        {
-            "source_rank": 1,
-            "url": "https://available.example/source",
-            "title": "Available source",
-            "snippet": None,
-        }
-    ]
+    assert "search_results" not in context
     assert context["openable_search_results"] == [
         {
             "source_rank": 1,
