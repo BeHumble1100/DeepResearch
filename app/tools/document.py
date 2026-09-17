@@ -50,6 +50,10 @@ class HttpDocumentOpener:
 
     _HTML_CONTENT_TYPES = {"text/html", "application/xhtml+xml"}
     _PDF_CONTENT_TYPE = "application/pdf"
+    _REQUEST_HEADERS = {
+        "User-Agent": "DeepResearch/1.0 (evidence-driven research agent)",
+        "Accept": "text/html,application/xhtml+xml,application/pdf;q=0.9,*/*;q=0.1",
+    }
 
     def __init__(
         self,
@@ -69,11 +73,16 @@ class HttpDocumentOpener:
                 timeout=timeout,
                 follow_redirects=True,
                 transport=self._transport,
+                headers=self._REQUEST_HEADERS,
             ) as client:
                 response = await client.get(url)
                 response.raise_for_status()
         except httpx.TimeoutException as error:
             raise DocumentOpenError(f"Document request timed out: {url}") from error
+        except httpx.HTTPStatusError as error:
+            raise DocumentOpenError(
+                f"Document request returned HTTP {error.response.status_code}: {url}"
+            ) from error
         except httpx.HTTPError as error:
             raise DocumentOpenError(f"Document request failed: {url}") from error
 

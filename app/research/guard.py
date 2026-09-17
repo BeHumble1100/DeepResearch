@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from .schemas import AnswerAction, DocumentRef, Fact, Target
+from .schemas import AnswerAction, Constraint, DocumentRef, Fact, Target
 from .state import ResearchState
 
 
@@ -45,7 +45,7 @@ class AnswerGuard:
                 reasons.append(f"Unknown supporting constraint: {constraint_id}")
 
         for constraint in constraints.values():
-            if not constraint.required:
+            if not _requires_final_support(constraint):
                 continue
             scoped_relations = [
                 (fact, relation.status)
@@ -70,6 +70,11 @@ class AnswerGuard:
 def _facts_in_scope(facts: list[Fact], evidence_scope_id: str | None) -> list[Fact]:
     """Keep candidate and direct/global evidence modes mutually exclusive."""
     return [fact for fact in facts if fact.evidence_scope_id == evidence_scope_id]
+
+
+def _requires_final_support(constraint: Constraint) -> bool:
+    """Keep discovery clues useful to research without making them terminal gate conditions."""
+    return constraint.required and constraint.kind == "acceptance"
 
 
 def _matches_basic_format(answer: str, target: Target | None) -> bool:

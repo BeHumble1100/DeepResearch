@@ -24,6 +24,7 @@ class Constraint(BaseModel):
     predicate: str | None = None
     object: str | None = None
     required: bool = True
+    kind: Literal["acceptance", "research_clue"] = "acceptance"
     status: Literal["unknown", "supported", "contradicted"] = "unknown"
     supporting_fact_ids: list[str] = Field(default_factory=list)
 
@@ -43,6 +44,7 @@ class ConstraintProposal(BaseModel):
     predicate: str | None = None
     object: str | None = None
     required: bool = True
+    kind: Literal["acceptance", "research_clue"] = "acceptance"
 
 
 class Fact(BaseModel):

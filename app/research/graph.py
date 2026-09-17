@@ -22,7 +22,7 @@ from .state import ResearchState
 from .evidence import FactExtractor, apply_fact_extraction, opening_passage
 from .guard import AnswerGuard
 from .trace import append_action_trace, append_event_trace
-from app.tools.document import DocumentOpener
+from app.tools.document import DocumentOpenError, DocumentOpener
 from app.tools.search import SearchGateway
 from app.tools.retrieval import DocumentRetriever
 
@@ -83,7 +83,11 @@ def build_research_graph(
                 )
             }
         required_constraints = [
-            {"id": constraint.id, "description": constraint.description}
+            {
+                "id": constraint.id,
+                "description": constraint.description,
+                "kind": constraint.kind,
+            }
             for constraint in research.constraints
             if constraint.required
         ]
@@ -121,6 +125,15 @@ def build_research_graph(
         action = state["action"]
         if not isinstance(action, OpenAction):
             raise ValueError("Open node requires an OpenAction.")
+        if _is_duplicate_open(research, action):
+            return {
+                "research": _reject_action(
+                    research,
+                    action=action,
+                    planner_context=state.get("planner_context"),
+                    reason="OPEN URL exactly duplicates an earlier OPEN attempt in this research run.",
+                )
+            }
         scope_rejection = _validate_open_scope(research, action)
         if scope_rejection:
             return {
@@ -141,7 +154,17 @@ def build_research_graph(
                     reason="OPEN URL was not discovered by a prior SEARCH in this research run.",
                 )
             }
-        document = await document_opener.open(url=action.url)
+        try:
+            document = await document_opener.open(url=action.url)
+        except DocumentOpenError as error:
+            return {
+                "research": _reject_action(
+                    research,
+                    action=action,
+                    planner_context=state.get("planner_context"),
+                    reason=f"OPEN document fetch or parse failed: {error}",
+                )
+            }
         created_scope = None
         if action.new_candidate_label is not None:
             created_scope = CandidateScope(
@@ -264,6 +287,18 @@ def build_research_graph(
         action = state["action"]
         if not isinstance(action, AnswerAction):
             raise ValueError("Answer node requires an AnswerAction.")
+        if _is_duplicate_rejected_answer(research, action):
+            return {
+                "research": _reject_action(
+                    research,
+                    action=action,
+                    planner_context=state.get("planner_context"),
+                    reason=(
+                        "ANSWER exactly duplicates a prior guard-rejected proposal without "
+                        "new evidence."
+                    ),
+                )
+            }
         if action.candidate_scope_id is not None and action.candidate_scope_id not in {
             scope.id for scope in research.candidate_scopes
         }:
@@ -428,6 +463,37 @@ def _is_duplicate_locate(research: ResearchState, action: LocateAction) -> bool:
     )
 
 
+def _is_duplicate_open(research: ResearchState, action: OpenAction) -> bool:
+    """Prevent repeated network access to the exact same URL within one run."""
+    return any(
+        entry.action == "open" and entry.action_input.get("url") == action.url
+        for entry in research.trace
+    )
+
+
+def _is_duplicate_rejected_answer(research: ResearchState, action: AnswerAction) -> bool:
+    """Reject only an unchanged proposal after Guard rejection and before new evidence."""
+    candidate = _answer_signature(action.model_dump())
+    for entry in reversed(research.trace):
+        if entry.new_facts or entry.resolved_entities:
+            return False
+        if entry.action != "answer" or entry.guard_result is None:
+            continue
+        if entry.guard_result.accepted:
+            return False
+        return candidate == _answer_signature(entry.action_input)
+    return False
+
+
+def _answer_signature(payload: dict[str, object]) -> tuple[object, ...]:
+    return (
+        payload.get("answer"),
+        tuple(payload.get("supporting_fact_ids", [])),
+        tuple(payload.get("supporting_constraint_ids", [])),
+        payload.get("candidate_scope_id"),
+    )
+
+
 def _validate_open_scope(research: ResearchState, action: OpenAction) -> str | None:
     """Validate state-owned candidate namespaces before any URL is opened."""
     if action.candidate_scope_id is not None and action.new_candidate_label is not None:
@@ -445,7 +511,7 @@ def _project_accepted_constraints(research: ResearchState, action: AnswerAction)
     """Project only the accepted answer's scoped support into global final state."""
     constraints = []
     for constraint in research.constraints:
-        if not constraint.required:
+        if not (constraint.required and constraint.kind == "acceptance"):
             constraints.append(constraint)
             continue
         supporting_fact_ids = [

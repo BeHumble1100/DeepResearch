@@ -17,6 +17,7 @@ from app.research.schemas import (
     SearchResult,
 )
 from app.research.state import ResearchState
+from app.tools.document import DocumentOpenError
 
 
 class FakeSearchGateway:
@@ -157,6 +158,78 @@ def test_open_rejects_undiscovered_urls_without_calling_opener() -> None:
     assert rejection.validation_rejection_reason == (
         "OPEN URL was not discovered by a prior SEARCH in this research run."
     )
+
+
+class SearchThenOpenPlanner(MockPlanner):
+    def __init__(self) -> None:
+        self._actions = [
+            SearchAction(goal="Discover source", query="source"),
+            OpenAction(goal="Open source", url="https://example.com/mock-source"),
+        ]
+
+    async def next_action(self, state: ResearchState):
+        return self._actions.pop(0)
+
+
+class FailingDocumentOpener(FakeDocumentOpener):
+    async def open(self, *, url: str):
+        self.opened_urls.append(url)
+        raise DocumentOpenError("Document request failed: https://example.com/mock-source")
+
+
+def test_open_backend_failure_is_recoverable_and_traced() -> None:
+    opener = FailingDocumentOpener()
+    graph = make_graph(SearchThenOpenPlanner(), document_opener=opener)
+
+    result = asyncio.run(
+        graph.ainvoke(
+            {"research": ResearchState(question="Question", max_steps=2), "action": None}
+        )
+    )
+
+    research = result["research"]
+    rejection = research.trace[1]
+    assert research.status == "budget_exhausted"
+    assert opener.opened_urls == ["https://example.com/mock-source"]
+    assert research.documents == []
+    assert rejection.action == "open"
+    assert rejection.planner_context is not None
+    assert rejection.remaining_step_budget == 1
+    assert rejection.validation_rejection_reason == (
+        "OPEN document fetch or parse failed: "
+        "Document request failed: https://example.com/mock-source"
+    )
+
+
+class SearchThenRepeatedOpenPlanner(MockPlanner):
+    def __init__(self) -> None:
+        self._actions = [
+            SearchAction(goal="Discover source", query="source"),
+            OpenAction(goal="Open source", url="https://example.com/mock-source"),
+            OpenAction(goal="Retry source", url="https://example.com/mock-source"),
+        ]
+
+    async def next_action(self, state: ResearchState):
+        return self._actions.pop(0)
+
+
+def test_duplicate_open_is_rejected_without_second_network_attempt() -> None:
+    opener = FailingDocumentOpener()
+    graph = make_graph(SearchThenRepeatedOpenPlanner(), document_opener=opener)
+
+    result = asyncio.run(
+        graph.ainvoke(
+            {"research": ResearchState(question="Question", max_steps=3), "action": None}
+        )
+    )
+
+    research = result["research"]
+    assert opener.opened_urls == ["https://example.com/mock-source"]
+    assert research.trace[2].validation_rejection_reason == (
+        "OPEN URL exactly duplicates an earlier OPEN attempt in this research run."
+    )
+    assert research.trace[2].planner_context is not None
+    assert research.trace[2].remaining_step_budget == 1
 
 
 class TwoSearchThenOpenPlanner(MockPlanner):
@@ -395,8 +468,8 @@ def test_search_passes_only_unresolved_constraints_and_entities_to_gateway() -> 
     )
 
     assert gateway.unresolved_required_constraints == [
-        {"id": "c1", "description": "Unresolved"},
-        {"id": "c2", "description": "Supported"},
+        {"id": "c1", "description": "Unresolved", "kind": "acceptance"},
+        {"id": "c2", "description": "Supported", "kind": "acceptance"},
     ]
     assert gateway.resolved_entities == {"author": "Ada"}
 
@@ -454,6 +527,41 @@ def test_answer_without_real_fact_is_rejected_before_guard() -> None:
     assert research.trace[0].action == "answer"
     assert research.trace[0].validation_rejection_reason == (
         "ANSWER proposal does not cite any real supporting Fact from this research run."
+    )
+
+
+def test_duplicate_guard_rejected_answer_is_rejected_until_new_evidence() -> None:
+    class RepeatingAnswerPlanner(MockPlanner):
+        async def next_action(self, state):
+            if not state.executed_queries:
+                return SearchAction(goal="Find", query="Question")
+            if not state.documents:
+                return OpenAction(goal="Open", url="https://example.com/mock-source")
+            return AnswerAction(
+                answer="Unsupported",
+                supporting_fact_ids=[state.facts[0].id],
+                supporting_constraint_ids=["c1"],
+            )
+
+    graph = make_graph(RepeatingAnswerPlanner())
+    result = asyncio.run(
+        graph.ainvoke(
+            {
+                "research": ResearchState(
+                    question="Question",
+                    constraints=[Constraint(id="c1", description="Needs explicit support")],
+                    max_steps=4,
+                ),
+                "action": None,
+            }
+        )
+    )
+
+    research = result["research"]
+    assert research.trace[2].guard_result is not None
+    assert not research.trace[2].guard_result.accepted
+    assert research.trace[3].validation_rejection_reason == (
+        "ANSWER exactly duplicates a prior guard-rejected proposal without new evidence."
     )
 
 

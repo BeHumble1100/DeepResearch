@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from typing import Protocol
+from urllib.parse import urlsplit
 
 from pydantic import BaseModel, Field
 
@@ -91,6 +92,12 @@ class LLMPlanner:
                     "Return exactly one target and a minimal set of atomic, independently verifiable "
                     "constraints. Each constraint must represent one checkable condition that would help "
                     "establish the final answer.\n\n"
+                    "Classify each constraint by kind. Use acceptance only for a condition the final "
+                    "answer must directly satisfy or be directly verified by. Use research_clue for "
+                    "historical, contextual, entity-bridging, or disambiguation clues that guide research "
+                    "but should not independently block a final answer. Keep acceptance constraints few.\n\n"
+                    "Return at least one acceptance constraint. Deterministic code will add a target "
+                    "verification constraint if you fail to provide one.\n\n"
                     "Avoid duplicate constraints, bundled conditions, speculative entities, and facts "
                     "not supported by the wording of the question.\n\n"
                     "Do not assign constraint IDs, statuses, or supporting fact IDs. Those are owned "
@@ -108,14 +115,20 @@ class LLMPlanner:
                 "role": "system",
                 "content": (
                     "Choose exactly one next research action from the supplied research state.\n\n"
-                    "Focus on the highest-value unresolved required constraint. Do not create a "
+                    "Focus on the highest-value unresolved acceptance constraint or research clue. Do not create a "
                     "multi-step plan.\n\n"
                     "Research progress is not the number of collected facts. Treat progress primarily "
                     "as:\n"
-                    "- a required constraint becoming supported or contradicted by evidence,\n"
-                    "- a new supporting fact relevant to an unresolved constraint,\n"
+                    "- an acceptance constraint becoming supported or contradicted by evidence,\n"
+                    "- a new supporting fact relevant to an unresolved acceptance constraint or clue,\n"
                     "- or an entity being explicitly resolved from opened or located evidence.\n\n"
                     "Action policy:\n\n"
+                    "ACTION PRIORITY:\n"
+                    "Before SEARCH, inspect openable_search_results and documents_requiring_locate. "
+                    "If openable_search_results is non-empty, OPEN one relevant unattempted source. "
+                    "If documents_requiring_locate is non-empty and it is likely to contain the needed "
+                    "evidence, LOCATE that document. Use SEARCH only when neither path can advance the "
+                    "current goal, or after they have been exhausted.\n\n"
                     "SEARCH:\n"
                     "Use SEARCH when the current goal still lacks a useful source or candidate. "
                     "Avoid repeating the same retrieval angle with superficial query paraphrases.\n\n"
@@ -124,7 +137,8 @@ class LLMPlanner:
                     "goal, prefer OPEN over another SEARCH so the candidate can be verified. "
                     "Search-result titles and snippets are only for source selection and are not "
                     "evidence.\n\n"
-                    "OPEN only URLs supplied by the research state. Never invent a URL.\n\n"
+                    "OPEN only a URL listed in openable_search_results. Never invent a URL, reopen an "
+                    "attempted URL, or retry a URL listed in failed_open_urls.\n\n"
                     "For a new candidate hypothesis, provide new_candidate_label and leave "
                     "candidate_scope_id empty. For an existing hypothesis, use only a "
                     "candidate_scope_id listed in candidate_scopes. Never invent a scope ID or "
@@ -141,7 +155,7 @@ class LLMPlanner:
                     "You may search to verify or falsify a hypothesis, but do not treat it as an "
                     "established fact in subsequent reasoning.\n\n"
                     "ANSWER:\n"
-                    "Propose ANSWER only when the required constraints needed for the answer are "
+                    "Propose ANSWER only when all acceptance constraints needed for the answer are "
                     "supported by existing evidence.\n\n"
                     "supporting_fact_ids must contain only IDs that appear in known_facts. "
                     "supporting_constraint_ids must contain only IDs that appear in constraints. "
@@ -151,6 +165,9 @@ class LLMPlanner:
                     "or URLs.\n\n"
                     "When candidate-scoped evidence supports an answer, select its existing "
                     "candidate_scope_id.\n\n"
+                    "If recent_actions.last_guard_rejection is present, do not repeat that rejected "
+                    "ANSWER without new supporting evidence. Use its reject reasons to seek the "
+                    "missing evidence instead.\n\n"
                     "Use the remaining step budget efficiently and return exactly one structured "
                     "SEARCH, OPEN, LOCATE, or ANSWER action."
                 ),
@@ -174,6 +191,7 @@ def _compact_state_view(state: ResearchState) -> str:
                 "id": constraint.id,
                 "description": constraint.description,
                 "required": constraint.required,
+                "kind": constraint.kind,
                 "status": constraint.status,
             }
             for constraint in state.constraints
@@ -202,10 +220,15 @@ def _compact_state_view(state: ResearchState) -> str:
             {"url": result.url, "title": result.title, "snippet": result.snippet}
             for result in state.search_results
         ],
+        "openable_search_results": _openable_search_results(state),
+        "documents_requiring_locate": _documents_requiring_locate(state),
         "recent_actions": {
             "executed_queries": state.executed_queries,
             "visited_urls": state.visited_urls,
+            "failed_open_urls": _failed_open_urls(state),
+            "failed_open_hosts": _failed_open_hosts(state),
             "last_locate_outcome": _last_locate_outcome(state),
+            "last_guard_rejection": _last_guard_rejection(state),
         },
         "remaining_step_budget": state.max_steps - state.step_count,
     }
@@ -225,6 +248,87 @@ def _last_locate_outcome(state: ResearchState) -> dict[str, object] | None:
         "new_supporting_fact_ids": new_supporting_fact_ids,
         "resolved_entity_keys": sorted(entry.resolved_entities),
     }
+
+
+def _failed_open_urls(state: ResearchState) -> list[str]:
+    """Expose prior source-opening failures without adding document content to context."""
+    return list(
+        dict.fromkeys(
+            str(entry.action_input["url"])
+            for entry in state.trace
+            if entry.action == "open"
+            and entry.validation_rejection_reason
+            and entry.validation_rejection_reason.startswith("OPEN document fetch or parse failed:")
+            and isinstance(entry.action_input.get("url"), str)
+        )
+    )
+
+
+def _failed_open_hosts(state: ResearchState) -> list[str]:
+    """Avoid another URL from a host that explicitly denied this run's requests."""
+    hosts: list[str] = []
+    for entry in state.trace:
+        if entry.action != "open" or not entry.validation_rejection_reason:
+            continue
+        if not entry.validation_rejection_reason.startswith(
+            "OPEN document fetch or parse failed: Document request returned HTTP "
+        ):
+            continue
+        if not (
+            "HTTP 401:" in entry.validation_rejection_reason
+            or "HTTP 403:" in entry.validation_rejection_reason
+        ):
+            continue
+        url = entry.action_input.get("url")
+        host = urlsplit(url).netloc.lower() if isinstance(url, str) else ""
+        if host and host not in hosts:
+            hosts.append(host)
+    return hosts
+
+
+def _last_guard_rejection(state: ResearchState) -> dict[str, object] | None:
+    """Expose unmet evidence requirements until a later action adds new evidence."""
+    for entry in reversed(state.trace):
+        if entry.new_facts or entry.resolved_entities:
+            return None
+        if entry.action == "answer" and entry.guard_result and not entry.guard_result.accepted:
+            return {
+                "answer": entry.action_input.get("answer"),
+                "supporting_fact_ids": entry.answer_supporting_fact_ids,
+                "supporting_constraint_ids": entry.answer_supporting_constraint_ids,
+                "candidate_scope_id": entry.action_input.get("candidate_scope_id"),
+                "reject_reasons": entry.guard_result.reject_reasons,
+            }
+    return None
+
+
+def _openable_search_results(state: ResearchState) -> list[dict[str, str | None]]:
+    """Expose current search candidates that have not been attempted in this run."""
+    attempted_urls = {
+        str(entry.action_input["url"])
+        for entry in state.trace
+        if entry.action == "open" and isinstance(entry.action_input.get("url"), str)
+    }
+    failed_hosts = set(_failed_open_hosts(state))
+    return [
+        {"url": result.url, "title": result.title, "snippet": result.snippet}
+        for result in state.search_results
+        if result.url not in attempted_urls and urlsplit(result.url).netloc.lower() not in failed_hosts
+    ]
+
+
+def _documents_requiring_locate(state: ResearchState) -> list[dict[str, str | None]]:
+    """Expose opened documents without a prior document-local retrieval attempt."""
+    located_document_ids = {
+        str(entry.action_input["document_id"])
+        for entry in state.trace
+        if entry.action == "locate" and isinstance(entry.action_input.get("document_id"), str)
+    }
+    return [
+        {"id": document.id, "url": document.url, "title": document.title}
+        for document in state.documents
+        if document.id not in located_document_ids
+    ]
 
 
 def _candidate_scope_summary(state: ResearchState) -> list[dict[str, object]]:
@@ -255,7 +359,7 @@ def _candidate_scope_summary(state: ResearchState) -> list[dict[str, object]]:
 def _materialize_initialization(proposal: InitializationProposal) -> Initialization:
     """Assign deterministic state-owned IDs and initial fields to unique constraints."""
     constraints: list[Constraint] = []
-    seen: set[tuple[str, str | None, str | None, str | None, bool]] = set()
+    seen: set[tuple[str, str | None, str | None, str | None, bool, str]] = set()
     for candidate in proposal.constraints:
         normalized = _normalize_constraint(candidate)
         key = (
@@ -264,6 +368,7 @@ def _materialize_initialization(proposal: InitializationProposal) -> Initializat
             normalized.predicate,
             normalized.object,
             normalized.required,
+            normalized.kind,
         )
         if key in seen:
             continue
@@ -276,6 +381,18 @@ def _materialize_initialization(proposal: InitializationProposal) -> Initializat
                 predicate=normalized.predicate,
                 object=normalized.object,
                 required=normalized.required,
+                kind=normalized.kind,
+                status="unknown",
+                supporting_fact_ids=[],
+            )
+        )
+    if not any(constraint.required and constraint.kind == "acceptance" for constraint in constraints):
+        constraints.append(
+            Constraint(
+                id=f"c{len(constraints) + 1}",
+                description=proposal.target.description,
+                required=True,
+                kind="acceptance",
                 status="unknown",
                 supporting_fact_ids=[],
             )
@@ -290,6 +407,7 @@ def _normalize_constraint(candidate: ConstraintProposal) -> ConstraintProposal:
         predicate=_normalize_optional(candidate.predicate),
         object=_normalize_optional(candidate.object),
         required=candidate.required,
+        kind=candidate.kind,
     )
 
 
