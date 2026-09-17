@@ -1,7 +1,7 @@
 import pytest
 from pydantic import TypeAdapter, ValidationError
 
-from app.research.schemas import Action, Fact, SearchAction
+from app.research.schemas import Action, ConstraintProposal, Fact, SearchAction
 
 
 def test_action_is_discriminated_by_type() -> None:
@@ -21,3 +21,8 @@ def test_fact_confidence_must_be_a_probability() -> None:
             passage="Supporting text",
             confidence=1.1,
         )
+
+
+def test_constraint_proposal_requires_explicit_kind() -> None:
+    with pytest.raises(ValidationError):
+        ConstraintProposal(description="A condition")

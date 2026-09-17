@@ -105,9 +105,15 @@ def test_llm_planner_initializes_with_a_structured_contract() -> None:
             InitializationProposal(
                 target=Target(description="Find an author", answer_type="person_name"),
                 constraints=[
-                    ConstraintProposal(description=" Author wrote the work ", subject=" Author "),
-                    ConstraintProposal(description="Author wrote the work", subject="Author"),
-                    ConstraintProposal(description="Work was published", required=False),
+                    ConstraintProposal(
+                        description=" Author wrote the work ", subject=" Author ", kind="acceptance"
+                    ),
+                    ConstraintProposal(
+                        description="Author wrote the work", subject="Author", kind="acceptance"
+                    ),
+                    ConstraintProposal(
+                        description="Work was published", required=False, kind="research_clue"
+                    ),
                 ],
             )
         ]
@@ -411,14 +417,16 @@ def test_initialization_prompt_keeps_target_type_out_of_acceptance_constraints()
         [
             InitializationProposal(
                 target=Target(description="Author", answer_type="person"),
-                constraints=[ConstraintProposal(description="Author wrote the work")],
+                constraints=[ConstraintProposal(description="Author wrote the work", kind="acceptance")],
             )
         ]
     )
 
     asyncio.run(LLMPlanner(client).initialize("Who wrote the work?"))
 
-    assert "Target already owns answer type and format" in client.calls[0][0][0]["content"]
+    prompt = client.calls[0][0][0]["content"]
+    assert "Target already owns answer type and format" in prompt
+    assert "Keep acceptance constraints answer-neutral" in prompt
 
 
 def test_fake_llm_client_drives_the_phase_2_graph_loop() -> None:

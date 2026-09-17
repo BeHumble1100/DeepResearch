@@ -15,6 +15,7 @@ DeepResearch V1 has an implemented, test-covered research harness and a complete
 - Lightweight serializable Research Trace, including planner context snapshots, bounded search results, action rejections, and Guard outcomes.
 - DeepSeek OpenAI-compatible adapter and real structured API smoke coverage.
 - Prompt Pack V1 and Calibration V2.
+- Initialization requires every proposed constraint to be explicitly classified and keeps acceptance constraints answer-neutral, preventing a guessed target value from becoming its own evidence requirement.
 - Discovered-URL allow-list, recoverable action rejection, exact duplicate SEARCH/LOCATE rejection, and step-budget enforcement.
 - Candidate Evidence Scope Contract V1: deterministic candidate scopes, scoped document/fact provenance, mutually exclusive Guard modes, final-only global constraint projection, and scope-creation Trace records.
 - Phase 8 evaluation runner: failure-isolated sequential execution, per-question state/Trace artifacts, conservative normalized exact-match scoring, and trace-derived aggregate metrics.
