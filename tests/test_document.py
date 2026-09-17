@@ -19,6 +19,8 @@ def make_settings(tmp_path: Path) -> Settings:
 
 def test_html_document_is_parsed_and_saved_for_later_retrieval(tmp_path: Path) -> None:
     def handler(request: httpx.Request) -> httpx.Response:
+        assert request.headers["user-agent"] == "DeepResearch/1.0 (evidence-driven research agent)"
+        assert "text/html" in request.headers["accept"]
         return httpx.Response(
             200,
             headers={"content-type": "text/html; charset=utf-8"},
@@ -86,6 +88,16 @@ def test_document_opener_reports_timeout(tmp_path: Path) -> None:
     )
 
     with pytest.raises(DocumentOpenError, match="timed out"):
+        asyncio.run(opener.open(url="https://example.com/article"))
+
+
+def test_document_opener_reports_http_status(tmp_path: Path) -> None:
+    opener = HttpDocumentOpener(
+        make_settings(tmp_path),
+        transport=httpx.MockTransport(lambda request: httpx.Response(403)),
+    )
+
+    with pytest.raises(DocumentOpenError, match="HTTP 403"):
         asyncio.run(opener.open(url="https://example.com/article"))
 
 

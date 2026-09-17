@@ -116,6 +116,25 @@ def test_guard_accepts_all_required_constraints_supported_in_one_scope() -> None
     assert result.accepted
 
 
+def test_guard_does_not_require_or_poison_research_clues() -> None:
+    acceptance = Constraint(id="c1", description="Final proof")
+    clue = Constraint(id="c2", description="Discovery clue", kind="research_clue")
+    supported = _fact("fact-a", "c1", "supported", scope_id="cand_1")
+    contradicted_clue = _fact("fact-b", "c2", "contradicted", scope_id="cand_1")
+
+    result = AnswerGuard().check(
+        research=_state(supported, contradicted_clue, constraints=[acceptance, clue]),
+        proposal=AnswerAction(
+            answer="Ada",
+            supporting_fact_ids=[supported.id],
+            supporting_constraint_ids=["c1"],
+            candidate_scope_id="cand_1",
+        ),
+    )
+
+    assert result.accepted
+
+
 def test_old_candidate_contradiction_does_not_block_new_candidate() -> None:
     old = _fact("fact-old", "c-1", "contradicted", scope_id="cand_1")
     new = _fact("fact-new", "c-1", "supported", scope_id="cand_2")

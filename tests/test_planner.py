@@ -7,7 +7,13 @@ from pydantic import BaseModel
 from app.llm.client import Message
 from app.research.graph import build_research_graph
 from app.research.guard import AnswerGuard
-from app.research.planner import Initialization, InitializationProposal, LLMPlanner
+from app.research.planner import (
+    Initialization,
+    InitializationProposal,
+    LLMPlanner,
+    _compact_state_view,
+    _materialize_initialization,
+)
 from app.research.schemas import (
     ActionDecision,
     AnswerAction,
@@ -22,6 +28,7 @@ from app.research.schemas import (
     Passage,
     SearchAction,
     Target,
+    TraceGuardResult,
     ResearchTraceEntry,
 )
 from app.research.state import ResearchState
@@ -178,6 +185,17 @@ def test_llm_planner_sends_a_compact_state_without_fact_passages() -> None:
         current_goal="Resolve the author",
         trace=[
             ResearchTraceEntry(
+                step=0,
+                action="open",
+                action_input={"url": "https://example.com/blocked"},
+                observation_summary="Source rejected the request.",
+                remaining_step_budget=8,
+                validation_rejection_reason=(
+                    "OPEN document fetch or parse failed: "
+                    "Document request failed: https://example.com/blocked"
+                ),
+            ),
+            ResearchTraceEntry(
                 step=1,
                 action="locate",
                 action_input={"document_id": "doc-1", "query": "author evidence"},
@@ -198,6 +216,7 @@ def test_llm_planner_sends_a_compact_state_without_fact_passages() -> None:
     assert "Resolve the author" in context
     assert "Action policy" in client.calls[0][0][0]["content"]
     assert "Research progress is not the number of collected facts" in client.calls[0][0][0]["content"]
+    assert "ACTION PRIORITY" in client.calls[0][0][0]["content"]
     compact_context = json.loads(context)
     assert compact_context["recent_actions"]["last_locate_outcome"] == {
         "document_id": "doc-1",
@@ -206,6 +225,82 @@ def test_llm_planner_sends_a_compact_state_without_fact_passages() -> None:
         "new_supporting_fact_ids": [],
         "resolved_entity_keys": [],
     }
+    assert compact_context["recent_actions"]["failed_open_urls"] == [
+        "https://example.com/blocked"
+    ]
+    assert compact_context["recent_actions"]["last_guard_rejection"] is None
+    assert compact_context["openable_search_results"] == [
+        {
+            "url": "https://example.com/search-result",
+            "title": "Search result title",
+            "snippet": "Search snippet",
+        }
+    ]
+    assert compact_context["documents_requiring_locate"] == []
+
+
+def test_compact_context_exposes_latest_guard_rejection_until_new_evidence() -> None:
+    state = ResearchState(
+        question="Question",
+        trace=[
+            ResearchTraceEntry(
+                step=1,
+                action="answer",
+                action_input={"answer": "Ada", "candidate_scope_id": None},
+                observation_summary="Guard rejected.",
+                remaining_step_budget=3,
+                answer_supporting_fact_ids=["fact-1"],
+                answer_supporting_constraint_ids=["c1"],
+                guard_result=TraceGuardResult(
+                    accepted=False, reject_reasons=["Required constraint lacks support: c1"]
+                ),
+            )
+        ],
+    )
+
+    context = json.loads(_compact_state_view(state))
+
+    assert context["recent_actions"]["last_guard_rejection"] == {
+        "answer": "Ada",
+        "supporting_fact_ids": ["fact-1"],
+        "supporting_constraint_ids": ["c1"],
+        "candidate_scope_id": None,
+        "reject_reasons": ["Required constraint lacks support: c1"],
+    }
+
+
+def test_compact_context_excludes_hosts_that_explicitly_denied_opening() -> None:
+    state = ResearchState(
+        question="Question",
+        search_results=[
+            SearchResult(url="https://blocked.example/second", title="Blocked again"),
+            SearchResult(url="https://available.example/source", title="Available source"),
+        ],
+        trace=[
+            ResearchTraceEntry(
+                step=1,
+                action="open",
+                action_input={"url": "https://blocked.example/first"},
+                observation_summary="Blocked.",
+                remaining_step_budget=3,
+                validation_rejection_reason=(
+                    "OPEN document fetch or parse failed: Document request returned HTTP 403: "
+                    "https://blocked.example/first"
+                ),
+            )
+        ],
+    )
+
+    context = json.loads(_compact_state_view(state))
+
+    assert context["recent_actions"]["failed_open_hosts"] == ["blocked.example"]
+    assert context["openable_search_results"] == [
+        {
+            "url": "https://available.example/source",
+            "title": "Available source",
+            "snippet": None,
+        }
+    ]
 
 
 def test_llm_planner_includes_deterministic_candidate_scope_summary() -> None:
@@ -231,6 +326,44 @@ def test_llm_planner_includes_deterministic_candidate_scope_summary() -> None:
     context = json.loads(client.calls[0][0][1]["content"])
     assert context["candidate_scopes"] == [
         {"id": "cand_1", "label": "Candidate A", "constraint_evidence": {"c1": "supported"}}
+    ]
+
+
+def test_initialization_preserves_constraint_kinds_and_compact_context_exposes_them() -> None:
+    initialization = InitializationProposal(
+        target=Target(description="Answer", answer_type="text"),
+        constraints=[
+            ConstraintProposal(description="Final condition", kind="acceptance"),
+            ConstraintProposal(description="Bridge clue", kind="research_clue"),
+        ],
+    )
+
+    state = ResearchState(
+        question="Question",
+        constraints=_materialize_initialization(initialization).constraints,
+    )
+    client = FakeLLMClient([ActionDecision(action=SearchAction(goal="Find", query="Question"))])
+
+    asyncio.run(LLMPlanner(client).next_action(state))
+
+    context = json.loads(client.calls[0][0][1]["content"])
+    assert [(item["id"], item["kind"]) for item in context["constraints"]] == [
+        ("c1", "acceptance"),
+        ("c2", "research_clue"),
+    ]
+
+
+def test_initialization_adds_target_acceptance_constraint_when_model_returns_only_clues() -> None:
+    initialization = InitializationProposal(
+        target=Target(description="Identify the final role", answer_type="role"),
+        constraints=[ConstraintProposal(description="Historical broadcast clue", kind="research_clue")],
+    )
+
+    result = _materialize_initialization(initialization)
+
+    assert [(item.id, item.kind, item.description) for item in result.constraints] == [
+        ("c1", "research_clue", "Historical broadcast clue"),
+        ("c2", "acceptance", "Identify the final role"),
     ]
 
 

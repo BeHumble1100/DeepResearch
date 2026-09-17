@@ -189,6 +189,22 @@ def test_opening_passage_is_bounded(tmp_path: Path) -> None:
     assert result.start_char == 2
 
 
+def test_opening_passage_includes_a_fetched_document_title_within_its_bound(
+    tmp_path: Path,
+) -> None:
+    content_path = tmp_path / "content.txt"
+    content_path.write_text("document body", encoding="utf-8")
+    document = _document().model_copy(
+        update={"local_path": str(content_path), "title": "Ada wrote Example"}
+    )
+
+    result = asyncio.run(opening_passage(document, max_chars=40))
+
+    assert result.text == "Title: Ada wrote Example\n\ndocument body"
+    assert result.start_char == 0
+    assert result.end_char == len(result.text)
+
+
 class FakeLLMClient:
     def __init__(self) -> None:
         self.messages: list[Message] = []
@@ -216,6 +232,7 @@ def test_llm_extractor_receives_only_supplied_passages() -> None:
     assert "c-1" in payload
     assert "atomic facts" in client.messages[0]["content"]
     assert "local reference only within the same" in client.messages[0]["content"]
+    assert "Assess each supplied constraint independently" in client.messages[0]["content"]
 
 
 def test_llm_extractor_skips_an_empty_passage_set() -> None:

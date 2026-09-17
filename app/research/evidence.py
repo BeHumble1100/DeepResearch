@@ -66,6 +66,10 @@ class LLMFactExtractor:
                     "A fact may list a constraint in supports_constraints only when that single "
                     "passage directly provides evidence for that constraint. Mere topical relevance "
                     "is not enough.\n\n"
+                    "Assess each supplied constraint independently. Use its description and, when "
+                    "present, subject/predicate/object to map a fact to the relation it explicitly "
+                    "states. Do not assign a fact to a different constraint merely because the same "
+                    "entities occur in both relations.\n\n"
                     "Mark a constraint contradicted only when the supplied passage contains explicit "
                     "evidence incompatible with it. Absence of evidence is not contradiction.\n\n"
                     "Resolved entities must also be explicitly stated or unambiguously resolved within "
@@ -99,14 +103,20 @@ class LLMFactExtractor:
 
 
 async def opening_passage(document: DocumentRef, *, max_chars: int) -> Passage:
-    """Load a bounded leading excerpt from an opened document for fact extraction."""
+    """Load a bounded opening excerpt, including fetched document title when present."""
     if not document.local_path:
         raise FactExtractionError(f"Document has no local parsed content: {document.id}")
     content = await asyncio.to_thread(Path(document.local_path).read_text, encoding="utf-8")
-    text = content[:max_chars].strip()
+    opening_content = content[:max_chars].strip()
+    title = document.title.strip() if document.title else ""
+    if title:
+        text = f"Title: {title}\n\n{opening_content}"[:max_chars].strip()
+        start = 0
+    else:
+        text = opening_content
+        start = len(content[:max_chars]) - len(content[:max_chars].lstrip())
     if not text:
         raise FactExtractionError(f"Document contains no extractable opening content: {document.id}")
-    start = len(content[:max_chars]) - len(content[:max_chars].lstrip())
     return Passage(
         id=f"{document.id}:open:0",
         document_id=document.id,

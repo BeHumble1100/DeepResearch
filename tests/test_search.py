@@ -167,6 +167,74 @@ def test_gateway_filters_deduplicates_and_limits_rewrites() -> None:
     assert requested_queries == ["first", "second", "third"]
 
 
+def test_gateway_demotes_off_topic_results_without_domain_filtering() -> None:
+    gateway = SearXNGSearchGateway(
+        make_settings(),
+        transport=httpx.MockTransport(
+            lambda request: httpx.Response(
+                200,
+                json={
+                    "results": [
+                        {
+                            "url": "https://noise.example/translate",
+                            "title": "Translation service",
+                            "content": "Translate text between languages.",
+                        },
+                        {
+                            "url": "https://source.example/gold",
+                            "title": "Gold chemical symbol Au",
+                            "content": "Gold has the chemical symbol Au.",
+                        },
+                    ]
+                },
+            )
+        ),
+    )
+
+    results = asyncio.run(
+        gateway.search(goal="Find the chemical symbol for gold", query="chemical symbol gold")
+    )
+
+    assert [result.url for result in results] == [
+        "https://source.example/gold",
+        "https://noise.example/translate",
+    ]
+
+
+def test_gateway_demotes_common_non_documentary_sources_even_when_lexically_relevant() -> None:
+    gateway = SearXNGSearchGateway(
+        make_settings(),
+        transport=httpx.MockTransport(
+            lambda request: httpx.Response(
+                200,
+                json={
+                    "results": [
+                        {
+                            "url": "https://www.tiktok.com/example",
+                            "title": "Tokyo capital city of Japan Kyoto",
+                            "content": "Tokyo is the capital city of Japan.",
+                        },
+                        {
+                            "url": "https://source.example/japan",
+                            "title": "Japan country profile",
+                            "content": "Information about Japan and Kyoto.",
+                        },
+                    ]
+                },
+            )
+        ),
+    )
+
+    results = asyncio.run(
+        gateway.search(goal="Find the capital city of the country containing Kyoto", query="Kyoto capital")
+    )
+
+    assert [result.url for result in results] == [
+        "https://source.example/japan",
+        "https://www.tiktok.com/example",
+    ]
+
+
 def test_llm_query_rewriter_receives_compact_research_context() -> None:
     client = FakeLLMClient(QueryRewrite(queries=["author work"]))
 

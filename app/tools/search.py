@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 from collections.abc import Mapping
 from typing import Protocol
 from urllib.parse import urlsplit, urlunsplit
@@ -153,7 +154,12 @@ class SearXNGSearchGateway:
             )
 
         flattened = [result for batch in batches for result in batch]
-        return _deduplicate_results(flattened)[: self._settings.searxng_max_results]
+        unique_results = _deduplicate_results(flattened)
+        return _rank_by_lexical_relevance(
+            unique_results,
+            query=" ".join(queries),
+            goal=goal,
+        )[: self._settings.searxng_max_results]
 
     async def _search_one(
         self, client: httpx.AsyncClient, query: str
@@ -219,6 +225,55 @@ def _deduplicate_results(results: list[SearchResult]) -> list[SearchResult]:
         seen_urls.add(result.url)
         unique.append(result)
     return unique
+
+
+def _rank_by_lexical_relevance(
+    results: list[SearchResult], *, query: str, goal: str
+) -> list[SearchResult]:
+    """Demote off-topic engine noise while preserving SearXNG order for ties.
+
+    This is candidate selection only: snippets remain non-evidence and no source is
+    excluded solely because it is from an unfamiliar domain.
+    """
+
+    terms = set(_relevance_terms(query)) | set(_relevance_terms(goal))
+    if not terms:
+        return results
+
+    def score(result: SearchResult) -> int:
+        title_terms = set(_relevance_terms(result.title or ""))
+        snippet_terms = set(_relevance_terms(result.snippet or ""))
+        return (2 * len(terms & title_terms)) + len(terms & snippet_terms)
+
+    return sorted(results, key=lambda result: (_source_quality(result), score(result)), reverse=True)
+
+
+_LOW_QUALITY_SOURCE_HOSTS = {
+    "answers.com",
+    "askfilo.com",
+    "brainly.com",
+    "brainly.in",
+    "gauthmath.com",
+    "pinterest.com",
+    "questionai.com",
+    "studyx.ai",
+    "tiktok.com",
+}
+
+
+def _source_quality(result: SearchResult) -> int:
+    """Keep commonly non-documentary source categories behind document candidates.
+
+    This is an ordering signal, not an allow-list: every normalized URL remains
+    available when no better candidate exists.
+    """
+
+    host = urlsplit(result.url).netloc.casefold()
+    return -1 if any(host == item or host.endswith(f".{item}") for item in _LOW_QUALITY_SOURCE_HOSTS) else 0
+
+
+def _relevance_terms(value: str) -> list[str]:
+    return [term for term in re.findall(r"[\w]+", value.casefold()) if len(term) >= 3]
 
 
 def _unique_nonempty(queries: list[str], *, limit: int | None = None) -> list[str]:
