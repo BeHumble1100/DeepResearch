@@ -55,7 +55,7 @@ class ConstraintProposal(BaseModel):
     predicate: str | None = None
     object: str | None = None
     required: bool = True
-    kind: Literal["acceptance", "research_clue"] = "acceptance"
+    kind: Literal["acceptance", "research_clue"]
 
 
 class Fact(BaseModel):
