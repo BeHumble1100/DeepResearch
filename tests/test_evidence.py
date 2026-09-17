@@ -233,6 +233,7 @@ def test_llm_extractor_receives_only_supplied_passages() -> None:
     assert "atomic facts" in client.messages[0]["content"]
     assert "local reference only within the same" in client.messages[0]["content"]
     assert "Assess each supplied constraint independently" in client.messages[0]["content"]
+    assert "comparison or rank fact about a different entity" in client.messages[0]["content"]
 
 
 def test_llm_extractor_skips_an_empty_passage_set() -> None:

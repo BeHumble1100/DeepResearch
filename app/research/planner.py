@@ -97,6 +97,10 @@ class LLMPlanner:
                     "answer must directly satisfy or be directly verified by. Use research_clue for "
                     "historical, contextual, entity-bridging, or disambiguation clues that guide research "
                     "but should not independently block a final answer. Keep acceptance constraints few.\n\n"
+                    "The Target already owns answer type and format. Do not create an acceptance "
+                    "constraint that merely restates a generic type or format, such as 'the answer "
+                    "identifies a person' or 'the answer is an ocean'; acceptance constraints must "
+                    "describe a factual relation that source evidence can directly verify.\n\n"
                     "Return at least one acceptance constraint. Deterministic code will add a target "
                     "verification constraint if you fail to provide one.\n\n"
                     "Avoid duplicate constraints, bundled conditions, speculative entities, and facts "
@@ -162,6 +166,11 @@ class LLMPlanner:
                     "supported by existing evidence.\n\n"
                     "supporting_fact_ids must contain only IDs that appear in known_facts. "
                     "supporting_constraint_ids must contain only IDs that appear in constraints. "
+                    "Cite a Fact for a constraint only when its constraint_evidence marks that "
+                    "constraint supported; never cite a Fact that marks it contradicted.\n\n"
+                    "The answer field must contain only the requested target value. Do not append "
+                    "aliases, parenthetical notes, explanations, citations, or labels unless the "
+                    "target format instruction explicitly requests them.\n\n"
                     "Never place a constraint ID in supporting_fact_ids or a fact ID in "
                     "supporting_constraint_ids.\n\n"
                     "Cite only existing IDs. Do not invent facts, constraints, documents, passages, "
@@ -184,6 +193,7 @@ class LLMPlanner:
 def _compact_state_view(state: ResearchState) -> str:
     """Serialize only the planner context allowed by the V1 specification."""
 
+    openable_search_results = _openable_search_results(state)
     context = {
         "original_question": state.question,
         "current_goal": state.current_goal,
@@ -204,6 +214,10 @@ def _compact_state_view(state: ResearchState) -> str:
                 "id": fact.id,
                 "statement": fact.statement,
                 "supports_constraints": fact.supports_constraints,
+                "constraint_evidence": [
+                    {"constraint_id": relation.constraint_id, "status": relation.status}
+                    for relation in fact.constraint_evidence
+                ],
                 "evidence_scope_id": fact.evidence_scope_id,
             }
             for fact in state.facts
@@ -219,11 +233,8 @@ def _compact_state_view(state: ResearchState) -> str:
             }
             for document in state.documents
         ],
-        "search_results": [
-            {"url": result.url, "title": result.title, "snippet": result.snippet}
-            for result in state.search_results
-        ],
-        "openable_search_results": _openable_search_results(state),
+        "search_results": openable_search_results,
+        "openable_search_results": openable_search_results,
         "documents_requiring_locate": _documents_requiring_locate(state),
         "recent_actions": {
             "executed_queries": state.executed_queries,

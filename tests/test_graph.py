@@ -13,6 +13,7 @@ from app.research.schemas import (
     LocateAction,
     OpenAction,
     Passage,
+    ResearchTraceEntry,
     SearchAction,
     SearchResult,
 )
@@ -157,6 +158,39 @@ def test_open_rejects_undiscovered_urls_without_calling_opener() -> None:
     assert rejection.remaining_step_budget == 1
     assert rejection.validation_rejection_reason == (
         "OPEN URL was not discovered by a prior SEARCH in this research run."
+    )
+
+
+class DeniedHostOpenPlanner(MockPlanner):
+    async def next_action(self, state: ResearchState) -> OpenAction:
+        return OpenAction(goal="Retry denied host", url="https://blocked.example/second")
+
+
+def test_open_rejects_a_url_from_an_earlier_access_denied_host() -> None:
+    opener = FakeDocumentOpener()
+    graph = make_graph(DeniedHostOpenPlanner(), document_opener=opener)
+    research = ResearchState(
+        question="Question",
+        max_steps=1,
+        discovered_urls=["https://blocked.example/second"],
+        trace=[
+            ResearchTraceEntry(
+                step=0,
+                action="open",
+                action_input={"url": "https://blocked.example/first"},
+                observation_summary="Blocked.",
+                remaining_step_budget=1,
+                validation_rejection_reason="OPEN document fetch or parse failed: Document request returned HTTP 403.",
+                source_failure_category="access_denied",
+            )
+        ],
+    )
+
+    result = asyncio.run(graph.ainvoke({"research": research, "action": None}))
+
+    assert opener.opened_urls == []
+    assert result["research"].trace[-2].validation_rejection_reason == (
+        "OPEN URL host was denied by an earlier document request in this research run."
     )
 
 

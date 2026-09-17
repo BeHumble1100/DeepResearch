@@ -182,3 +182,26 @@ def test_guard_rejects_unknown_ids_missing_support_and_bad_format() -> None:
     assert any("Unknown supporting fact" in reason for reason in result.reasons)
     assert any("Unknown supporting constraint" in reason for reason in result.reasons)
     assert any("basic format" in reason for reason in result.reasons)
+
+
+def test_guard_rejects_parenthetical_detail_when_target_requires_full_name() -> None:
+    fact = _fact("fact-1", "c-1", "supported", scope_id=None)
+    state = _state(fact).model_copy(
+        update={
+            "target": Target(
+                description="Author", answer_type="person", format_instruction="Provide the author's full name."
+            )
+        }
+    )
+
+    result = AnswerGuard().check(
+        research=state,
+        proposal=AnswerAction(
+            answer="George Orwell (the pen name of Eric Arthur Blair)",
+            supporting_fact_ids=[fact.id],
+            supporting_constraint_ids=["c-1"],
+        ),
+    )
+
+    assert not result.accepted
+    assert any("basic format" in reason for reason in result.reasons)
