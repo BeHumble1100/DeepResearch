@@ -110,15 +110,15 @@ async def opening_passage(document: DocumentRef, *, max_chars: int) -> Passage:
     """Load a bounded opening excerpt, including fetched document title when present."""
     if not document.local_path:
         raise FactExtractionError(f"Document has no local parsed content: {document.id}")
-    content = await asyncio.to_thread(Path(document.local_path).read_text, encoding="utf-8")
-    opening_content = content[:max_chars].strip()
+    content = await asyncio.to_thread(_read_prefix, document.local_path, max_chars)
+    opening_content = content.strip()
     title = document.title.strip() if document.title else ""
     if title:
         text = f"Title: {title}\n\n{opening_content}"[:max_chars].strip()
         start = 0
     else:
         text = opening_content
-        start = len(content[:max_chars]) - len(content[:max_chars].lstrip())
+        start = len(content) - len(content.lstrip())
     if not text:
         raise FactExtractionError(f"Document contains no extractable opening content: {document.id}")
     return Passage(
@@ -128,6 +128,11 @@ async def opening_passage(document: DocumentRef, *, max_chars: int) -> Passage:
         start_char=start,
         end_char=start + len(text),
     )
+
+
+def _read_prefix(local_path: str, max_chars: int) -> str:
+    with Path(local_path).open(encoding="utf-8") as content_file:
+        return content_file.read(max_chars)
 
 
 def apply_fact_extraction(

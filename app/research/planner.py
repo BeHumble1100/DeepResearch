@@ -233,7 +233,6 @@ def _compact_state_view(state: ResearchState) -> str:
             }
             for document in state.documents
         ],
-        "search_results": openable_search_results,
         "openable_search_results": openable_search_results,
         "documents_requiring_locate": _documents_requiring_locate(state),
         "recent_actions": {
