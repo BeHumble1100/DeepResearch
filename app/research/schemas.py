@@ -7,6 +7,17 @@ from typing import Annotated, Any, Literal
 from pydantic import BaseModel, Field
 
 
+SourceFailureCategory = Literal[
+    "access_denied",
+    "http_error",
+    "timeout",
+    "request_failed",
+    "unsupported_content",
+    "no_extractable_text",
+    "parse_failed",
+]
+
+
 class Target(BaseModel):
     """The final value the research process must answer."""
 
@@ -214,6 +225,7 @@ class ResearchTraceEntry(BaseModel):
     answer_supporting_constraint_ids: list[str] = Field(default_factory=list)
     guard_result: TraceGuardResult | None = None
     validation_rejection_reason: str | None = None
+    source_failure_category: SourceFailureCategory | None = None
     new_facts: list[TraceFact] = Field(default_factory=list)
     constraint_changes: list[ConstraintChange] = Field(default_factory=list)
     resolved_entities: dict[str, str] = Field(default_factory=dict)

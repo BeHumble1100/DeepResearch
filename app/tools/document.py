@@ -15,7 +15,7 @@ from pypdf import PdfReader
 from pypdf.errors import PdfReadError
 
 from app.config import Settings
-from app.research.schemas import DocumentRef
+from app.research.schemas import DocumentRef, SourceFailureCategory
 
 
 class DocumentOpener(Protocol):
@@ -24,6 +24,10 @@ class DocumentOpener(Protocol):
 
 class DocumentOpenError(RuntimeError):
     """Raised when an opened document cannot be fetched or parsed."""
+
+    def __init__(self, message: str, *, category: SourceFailureCategory = "request_failed") -> None:
+        super().__init__(message)
+        self.category = category
 
 
 class LocalDocumentStore:
@@ -78,13 +82,18 @@ class HttpDocumentOpener:
                 response = await client.get(url)
                 response.raise_for_status()
         except httpx.TimeoutException as error:
-            raise DocumentOpenError(f"Document request timed out: {url}") from error
+            raise DocumentOpenError(f"Document request timed out: {url}", category="timeout") from error
         except httpx.HTTPStatusError as error:
             raise DocumentOpenError(
-                f"Document request returned HTTP {error.response.status_code}: {url}"
+                f"Document request returned HTTP {error.response.status_code}: {url}",
+                category=(
+                    "access_denied"
+                    if error.response.status_code in {401, 403}
+                    else "http_error"
+                ),
             ) from error
         except httpx.HTTPError as error:
-            raise DocumentOpenError(f"Document request failed: {url}") from error
+            raise DocumentOpenError(f"Document request failed: {url}", category="request_failed") from error
 
         content_type = response.headers.get("content-type", "").split(";", 1)[0].lower()
         is_pdf = content_type == self._PDF_CONTENT_TYPE or response.content.startswith(b"%PDF-")
@@ -95,10 +104,16 @@ class HttpDocumentOpener:
             title, content = await asyncio.to_thread(_extract_html, response.text)
             normalized_content_type = "text/html"
         else:
-            raise DocumentOpenError(f"Unsupported document content type: {content_type or 'missing'}")
+            raise DocumentOpenError(
+                f"Unsupported document content type: {content_type or 'missing'}",
+                category="unsupported_content",
+            )
 
         if not content.strip():
-            raise DocumentOpenError(f"Document contains no extractable text: {response.url}")
+            raise DocumentOpenError(
+                f"Document contains no extractable text: {response.url}",
+                category="no_extractable_text",
+            )
 
         final_url = str(response.url)
         document_id = hashlib.sha256(final_url.encode("utf-8")).hexdigest()
@@ -135,5 +150,5 @@ def _extract_pdf(content: bytes) -> tuple[str | None, str]:
         metadata_title = reader.metadata.title if reader.metadata else None
         text = "\n".join(page.extract_text() or "" for page in reader.pages).strip()
     except PdfReadError as error:
-        raise DocumentOpenError("PDF could not be parsed.") from error
+        raise DocumentOpenError("PDF could not be parsed.", category="parse_failed") from error
     return metadata_title, text

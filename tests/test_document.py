@@ -87,8 +87,9 @@ def test_document_opener_reports_timeout(tmp_path: Path) -> None:
         transport=httpx.MockTransport(handler),
     )
 
-    with pytest.raises(DocumentOpenError, match="timed out"):
+    with pytest.raises(DocumentOpenError, match="timed out") as error:
         asyncio.run(opener.open(url="https://example.com/article"))
+    assert error.value.category == "timeout"
 
 
 def test_document_opener_reports_http_status(tmp_path: Path) -> None:
@@ -97,8 +98,9 @@ def test_document_opener_reports_http_status(tmp_path: Path) -> None:
         transport=httpx.MockTransport(lambda request: httpx.Response(403)),
     )
 
-    with pytest.raises(DocumentOpenError, match="HTTP 403"):
+    with pytest.raises(DocumentOpenError, match="HTTP 403") as error:
         asyncio.run(opener.open(url="https://example.com/article"))
+    assert error.value.category == "access_denied"
 
 
 def test_document_opener_rejects_unsupported_content_type(tmp_path: Path) -> None:
@@ -109,8 +111,9 @@ def test_document_opener_rejects_unsupported_content_type(tmp_path: Path) -> Non
         ),
     )
 
-    with pytest.raises(DocumentOpenError, match="Unsupported"):
+    with pytest.raises(DocumentOpenError, match="Unsupported") as error:
         asyncio.run(opener.open(url="https://example.com/image.png"))
+    assert error.value.category == "unsupported_content"
 
 
 def test_local_document_store_reads_saved_text(tmp_path: Path) -> None:

@@ -13,6 +13,7 @@ from .schemas import (
     TraceCandidateScope,
     TraceSearchResult,
     TraceFact,
+    SourceFailureCategory,
 )
 from .state import ResearchState
 
@@ -27,6 +28,7 @@ def append_action_trace(
     search_results: list[SearchResult] | None = None,
     guard_result: TraceGuardResult | None = None,
     validation_rejection_reason: str | None = None,
+    source_failure_category: SourceFailureCategory | None = None,
     created_candidate_scope: TraceCandidateScope | None = None,
 ) -> ResearchState:
     """Append one action record using only state deltas and compact metadata."""
@@ -50,6 +52,7 @@ def append_action_trace(
         ),
         guard_result=guard_result,
         validation_rejection_reason=validation_rejection_reason,
+        source_failure_category=source_failure_category,
         new_facts=_new_facts(before, after),
         constraint_changes=_constraint_changes(before, after),
         resolved_entities=_entity_changes(before, after),
