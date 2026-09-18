@@ -43,7 +43,7 @@ Search snippets are used for source selection only; they are not accepted as ans
 ### Setup
 
 ```powershell
-git clone https://github.com/<your-user>/DeepResearch.git
+git clone https://github.com/BeHumble1100/DeepResearch.git
 cd DeepResearch
 python -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -e .
