@@ -29,6 +29,7 @@ class FakeSearchGateway:
         query: str,
         unresolved_required_constraints=None,
         resolved_entities=None,
+        prior_queries=None,
     ) -> list[SearchResult]:
         return [SearchResult(url="https://example.com/mock-source", title="Mock source")]
 
@@ -287,6 +288,7 @@ class TwoResultSearchGateway:
         query: str,
         unresolved_required_constraints=None,
         resolved_entities=None,
+        prior_queries=None,
     ) -> list[SearchResult]:
         return [SearchResult(url=f"https://example.com/{query}", title=query)]
 
@@ -410,6 +412,7 @@ class CountingSearchGateway(FakeSearchGateway):
         query: str,
         unresolved_required_constraints=None,
         resolved_entities=None,
+        prior_queries=None,
     ) -> list[SearchResult]:
         self.queries.append(query)
         return await super().search(goal=goal, query=query)
@@ -419,6 +422,7 @@ class ContextSearchGateway(FakeSearchGateway):
     def __init__(self) -> None:
         self.unresolved_required_constraints = None
         self.resolved_entities = None
+        self.prior_queries = None
 
     async def search(
         self,
@@ -427,9 +431,11 @@ class ContextSearchGateway(FakeSearchGateway):
         query: str,
         unresolved_required_constraints=None,
         resolved_entities=None,
+        prior_queries=None,
     ) -> list[SearchResult]:
         self.unresolved_required_constraints = unresolved_required_constraints
         self.resolved_entities = resolved_entities
+        self.prior_queries = prior_queries
         return await super().search(goal=goal, query=query)
 
 
@@ -507,6 +513,26 @@ def test_search_passes_only_unresolved_constraints_and_entities_to_gateway() -> 
         {"id": "c2", "description": "Supported", "kind": "acceptance"},
     ]
     assert gateway.resolved_entities == {"author": "Ada"}
+    assert gateway.prior_queries == []
+
+
+def test_search_passes_prior_planner_queries_to_gateway() -> None:
+    gateway = ContextSearchGateway()
+    graph = make_graph(
+        ScriptedPlanner(
+            [
+                SearchAction(goal="First angle", query="first query"),
+                SearchAction(goal="Second angle", query="second query"),
+            ]
+        ),
+        search_gateway=gateway,
+    )
+
+    asyncio.run(
+        graph.ainvoke({"research": ResearchState(question="Question", max_steps=2), "action": None})
+    )
+
+    assert gateway.prior_queries == ["first query"]
 
 
 def test_duplicate_locate_is_rejected_without_calling_retriever() -> None:

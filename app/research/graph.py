@@ -98,6 +98,7 @@ def build_research_graph(
             query=action.query,
             unresolved_required_constraints=required_constraints,
             resolved_entities=research.resolved_entities,
+            prior_queries=research.executed_queries,
         )
         updated = research.model_copy(
             update={

@@ -24,6 +24,8 @@ DeepResearch V1 has an implemented, test-covered research harness and a complete
 - Source-aware OPEN recovery: structured fetch/parse failure categories in Trace, access-denied host avoidance, and deterministic candidate ordering that demotes common non-documentary material without filtering URLs.
 - Evidence relation calibration: rank or comparison evidence about a different entity no longer contradicts an unresolved answer constraint; Planner receives each known Fact's compact per-constraint evidence status.
 - Candidate visibility boundary: Planner context excludes URLs already attempted or belonging to an access-denied host, and the graph deterministically rejects further OPEN attempts to those hosts without making another request.
+- Query-progress control: Planner sees the current consecutive no-evidence SEARCH streak; Query Rewrite receives prior planner queries and deterministically excludes exact historical rewrites.
+- Document-local retrieval context keeps every opened document locatable with its prior retrieval progress, so a productive LOCATE can be refined with a new query instead of causing a duplicate OPEN attempt.
 - Real 100-question baseline run with DeepSeek, local SearXNG, and `max_steps=10`: 96 completed runs, 4 isolated `LLMClientError` runs, and 0/100 exact or normalized matches. This is the measured baseline, not a target claim.
 
 ## Current Focus

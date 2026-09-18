@@ -24,6 +24,7 @@ class FixedQueryRewriter:
         query: str,
         unresolved_required_constraints=None,
         resolved_entities=None,
+        prior_queries=None,
     ) -> list[str]:
         return self._queries
 
@@ -278,13 +279,40 @@ def test_llm_query_rewriter_receives_compact_research_context() -> None:
             query="work",
             unresolved_required_constraints=[{"id": "c1", "description": "Author wrote work"}],
             resolved_entities={"author": "Ada"},
+            prior_queries=["earlier author query"],
         )
     ) == ["author work"]
     assert "1 to 3" in client.messages[0]["content"]
     assert "unresolved required constraints" in client.messages[0]["content"]
+    assert "prior_planner_queries" in client.messages[0]["content"]
     assert json.loads(client.messages[1]["content"]) == {
         "goal": "Resolve author",
         "planner_query": "work",
         "unresolved_required_constraints": [{"id": "c1", "description": "Author wrote work"}],
         "resolved_entities": {"author": "Ada"},
+        "prior_planner_queries": ["earlier author query"],
     }
+
+
+def test_gateway_filters_rewritten_queries_used_by_prior_actions() -> None:
+    requested_queries: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requested_queries.append(request.url.params["q"])
+        return httpx.Response(200, json={"results": []})
+
+    gateway = SearXNGSearchGateway(
+        make_settings(),
+        query_rewriter=FixedQueryRewriter(["earlier query", "new angle"]),
+        transport=httpx.MockTransport(handler),
+    )
+
+    asyncio.run(
+        gateway.search(
+            goal="Find source",
+            query="planner query",
+            prior_queries=["earlier query"],
+        )
+    )
+
+    assert requested_queries == ["new angle"]
