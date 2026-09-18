@@ -866,4 +866,3 @@ If implementation reveals a real design problem:
 Do not allow implementation convenience to silently redefine architecture.
 
 ---
-

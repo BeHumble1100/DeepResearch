@@ -18,6 +18,7 @@ Question
 
 - Architecture design: `specs/deepresearch-v1.md`
 - Current code takes precedence over stale documentation.
+- Before changing architecture or data contracts, inspect relevant code, the spec, and `git status`.
 
 ## Development Rules
 
@@ -117,4 +118,4 @@ There is no committed canonical real smoke or regression runner yet. Historical 
 
 ## Documentation
 
-- Do not put temporary experiment results, Bad Cases, or benchmark outputs in this file.
+- After architecture or data-contract changes, update the relevant spec and public documentation when applicable.
