@@ -24,6 +24,7 @@ class SearchGateway(Protocol):
         query: str,
         unresolved_required_constraints: list[dict[str, str]] | None = None,
         resolved_entities: dict[str, str] | None = None,
+        prior_queries: list[str] | None = None,
     ) -> list[SearchResult]: ...
 
 
@@ -35,6 +36,7 @@ class QueryRewriter(Protocol):
         query: str,
         unresolved_required_constraints: list[dict[str, str]] | None = None,
         resolved_entities: dict[str, str] | None = None,
+        prior_queries: list[str] | None = None,
     ) -> list[str]: ...
 
 
@@ -48,6 +50,7 @@ class IdentityQueryRewriter:
         query: str,
         unresolved_required_constraints: list[dict[str, str]] | None = None,
         resolved_entities: dict[str, str] | None = None,
+        prior_queries: list[str] | None = None,
     ) -> list[str]:
         return [query]
 
@@ -65,6 +68,7 @@ class LLMQueryRewriter:
         query: str,
         unresolved_required_constraints: list[dict[str, str]] | None = None,
         resolved_entities: dict[str, str] | None = None,
+        prior_queries: list[str] | None = None,
     ) -> list[str]:
         messages: list[Message] = [
             {
@@ -78,6 +82,9 @@ class LLMQueryRewriter:
                     "high-value identifiers when they are available.\n\n"
                     "Each query should pursue a meaningfully different retrieval angle. Do not return "
                     "several superficial paraphrases of the same query.\n\n"
+                    "When prior_planner_queries is non-empty, do not repeat one or merely reorder its "
+                    "words. Choose a different discriminating clue from the goal or constraints, such "
+                    "as a relation, date, organization, title, or historical anchor.\n\n"
                     "Do not introduce an unsupported entity as if it were established fact. If a "
                     "possible entity is only a hypothesis, phrase the query so that it verifies or "
                     "falsifies that hypothesis.\n\n"
@@ -93,6 +100,7 @@ class LLMQueryRewriter:
                         "planner_query": query,
                         "unresolved_required_constraints": unresolved_required_constraints or [],
                         "resolved_entities": resolved_entities or {},
+                        "prior_planner_queries": prior_queries or [],
                     },
                     ensure_ascii=False,
                 ),
@@ -130,18 +138,30 @@ class SearXNGSearchGateway:
         query: str,
         unresolved_required_constraints: list[dict[str, str]] | None = None,
         resolved_entities: dict[str, str] | None = None,
+        prior_queries: list[str] | None = None,
     ) -> list[SearchResult]:
-        queries = _unique_nonempty(
+        prior_query_set = set(_unique_nonempty(prior_queries or []))
+        rewritten_queries = _unique_nonempty(
             await self._query_rewriter.rewrite(
                 goal=goal,
                 query=query,
                 unresolved_required_constraints=unresolved_required_constraints,
                 resolved_entities=resolved_entities,
+                prior_queries=prior_queries,
             ),
             limit=self._MAX_REWRITTEN_QUERIES,
         )
-        if not queries:
+        if not rewritten_queries:
             raise SearchGatewayError("Query rewriter returned no usable queries.")
+        queries = [
+            rewritten_query
+            for rewritten_query in rewritten_queries
+            if rewritten_query not in prior_query_set
+        ]
+        if not queries and query.strip() not in prior_query_set:
+            queries = [query.strip()]
+        if not queries:
+            raise SearchGatewayError("Query rewriter returned no new usable queries.")
 
         timeout = httpx.Timeout(self._settings.searxng_timeout_seconds)
         async with httpx.AsyncClient(

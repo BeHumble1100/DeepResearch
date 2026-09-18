@@ -63,6 +63,7 @@ class FakeSearchGateway:
         query: str,
         unresolved_required_constraints=None,
         resolved_entities=None,
+        prior_queries=None,
     ) -> list[SearchResult]:
         return [SearchResult(url="https://example.com/mock-source", title="Mock source")]
 
@@ -228,6 +229,7 @@ def test_llm_planner_sends_a_compact_state_without_fact_passages() -> None:
     assert "Action policy" in client.calls[0][0][0]["content"]
     assert "Research progress is not the number of collected facts" in client.calls[0][0][0]["content"]
     assert "ACTION PRIORITY" in client.calls[0][0][0]["content"]
+    assert "A document remains locatable after an earlier LOCATE" in client.calls[0][0][0]["content"]
     compact_context = json.loads(context)
     assert compact_context["recent_actions"]["last_locate_outcome"] == {
         "document_id": "doc-1",
@@ -248,11 +250,45 @@ def test_llm_planner_sends_a_compact_state_without_fact_passages() -> None:
             "snippet": "Search snippet",
         }
     ]
-    assert compact_context["documents_requiring_locate"] == []
+    assert compact_context["locatable_documents"] == [
+        {
+            "id": "doc-1",
+            "url": "https://example.com",
+            "title": None,
+            "supported_constraint_ids": [],
+            "locate_attempt_count": 1,
+            "last_locate_query": "author evidence",
+            "last_locate_progress": False,
+        }
+    ]
     assert compact_context["known_facts"][0]["constraint_evidence"] == [
         {"constraint_id": "c1", "status": "supported"},
         {"constraint_id": "c2", "status": "contradicted"},
     ]
+
+
+def test_locatable_document_summarizes_its_supported_constraints() -> None:
+    state = ResearchState(
+        question="Question",
+        documents=[DocumentRef(id="doc-1", url="https://example.com", content_type="text/html")],
+        facts=[
+            Fact(
+                id="fact-1",
+                statement="Document evidence.",
+                source_url="https://example.com",
+                document_id="doc-1",
+                passage_id="doc-1:open:0",
+                evidence_kind="open",
+                passage="Evidence.",
+                confidence=0.8,
+                constraint_evidence=[ConstraintEvidence(constraint_id="c2", status="supported")],
+            )
+        ],
+    )
+
+    context = json.loads(_compact_state_view(state))
+
+    assert context["locatable_documents"][0]["supported_constraint_ids"] == ["c2"]
 
 
 def test_compact_context_exposes_latest_guard_rejection_until_new_evidence() -> None:
@@ -283,6 +319,32 @@ def test_compact_context_exposes_latest_guard_rejection_until_new_evidence() -> 
         "candidate_scope_id": None,
         "reject_reasons": ["Required constraint lacks support: c1"],
     }
+
+
+def test_compact_context_counts_consecutive_searches_without_evidence() -> None:
+    state = ResearchState(
+        question="Question",
+        trace=[
+            ResearchTraceEntry(
+                step=1,
+                action="search",
+                action_input={"query": "first"},
+                observation_summary="No usable candidate.",
+                remaining_step_budget=3,
+            ),
+            ResearchTraceEntry(
+                step=2,
+                action="search",
+                action_input={"query": "second"},
+                observation_summary="No usable candidate.",
+                remaining_step_budget=2,
+            ),
+        ],
+    )
+
+    context = json.loads(_compact_state_view(state))
+
+    assert context["recent_actions"]["consecutive_searches_without_evidence"] == 2
 
 
 def test_compact_context_excludes_hosts_that_explicitly_denied_opening() -> None:

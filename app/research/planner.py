@@ -19,6 +19,7 @@ from .schemas import (
     ConstraintProposal,
     OpenAction,
     LocateAction,
+    ResearchTraceEntry,
     SearchAction,
     Target,
 )
@@ -134,16 +135,22 @@ class LLMPlanner:
                     "- or an entity being explicitly resolved from opened or located evidence.\n\n"
                     "Action policy:\n\n"
                     "ACTION PRIORITY:\n"
-                    "Before SEARCH, inspect openable_search_results and documents_requiring_locate. "
+                    "Before SEARCH, inspect openable_search_results and locatable_documents. "
                     "If openable_search_results is non-empty, OPEN one relevant unattempted source. "
                     "Those candidates are ordered by source quality and relevance; prefer the lowest "
                     "source_rank when candidates are similarly relevant. "
-                    "If documents_requiring_locate is non-empty and it is likely to contain the needed "
+                    "If locatable_documents is non-empty and one is likely to contain the needed "
                     "evidence, LOCATE that document. Use SEARCH only when neither path can advance the "
                     "current goal, or after they have been exhausted.\n\n"
+                    "A locatable document's supported_constraint_ids identifies which requirements its "
+                    "opened evidence already supports. When it supports part of an unresolved answer, "
+                    "prefer LOCATE with a new focused query to complete that same document's evidence.\n\n"
                     "SEARCH:\n"
                     "Use SEARCH when the current goal still lacks a useful source or candidate. "
                     "Avoid repeating the same retrieval angle with superficial query paraphrases.\n\n"
+                    "If recent_actions.consecutive_searches_without_evidence is 2 or more, the next "
+                    "SEARCH must use a different discriminating clue from the goal or constraints, "
+                    "rather than reordering or synonym-swapping an earlier query.\n\n"
                     "OPEN:\n"
                     "When current search results contain a plausibly relevant source for the current "
                     "goal, prefer OPEN over another SEARCH so the candidate can be verified. "
@@ -157,7 +164,9 @@ class LLMPlanner:
                     "provide both fields.\n\n"
                     "LOCATE:\n"
                     "Use LOCATE only on an already opened document when the needed evidence is likely "
-                    "to be inside that document.\n\n"
+                    "to be inside that document. A document remains locatable after an earlier LOCATE: "
+                    "when its last_locate_progress is true but the current goal is unresolved, use a "
+                    "different, more specific query instead of reopening its URL.\n\n"
                     "If the previous LOCATE on the same document produced no constraint progress, "
                     "no new supporting fact, and no resolved entity, do not keep probing that document "
                     "with minor query variations. Prefer searching for another source.\n\n"
@@ -239,9 +248,10 @@ def _compact_state_view(state: ResearchState) -> str:
             for document in state.documents
         ],
         "openable_search_results": openable_search_results,
-        "documents_requiring_locate": _documents_requiring_locate(state),
+        "locatable_documents": _locatable_documents(state),
         "recent_actions": {
             "executed_queries": state.executed_queries,
+            "consecutive_searches_without_evidence": _consecutive_searches_without_evidence(state),
             "visited_urls": state.visited_urls,
             "failed_open_urls": _failed_open_urls(state),
             "failed_open_hosts": _failed_open_hosts(state),
@@ -267,6 +277,18 @@ def _last_locate_outcome(state: ResearchState) -> dict[str, object] | None:
         "new_supporting_fact_ids": new_supporting_fact_ids,
         "resolved_entity_keys": sorted(entry.resolved_entities),
     }
+
+
+def _consecutive_searches_without_evidence(state: ResearchState) -> int:
+    """Expose a compact search-streak signal without semantic query comparison."""
+    count = 0
+    for entry in reversed(state.trace):
+        if entry.action != "search":
+            break
+        if entry.new_facts or entry.resolved_entities:
+            break
+        count += 1
+    return count
 
 
 def _failed_open_urls(state: ResearchState) -> list[str]:
@@ -368,18 +390,51 @@ def _openable_search_results(state: ResearchState) -> list[dict[str, str | int |
     ]
 
 
-def _documents_requiring_locate(state: ResearchState) -> list[dict[str, str | None]]:
-    """Expose opened documents without a prior document-local retrieval attempt."""
-    located_document_ids = {
-        str(entry.action_input["document_id"])
-        for entry in state.trace
-        if entry.action == "locate" and isinstance(entry.action_input.get("document_id"), str)
-    }
-    return [
-        {"id": document.id, "url": document.url, "title": document.title}
-        for document in state.documents
-        if document.id not in located_document_ids
-    ]
+def _locatable_documents(state: ResearchState) -> list[dict[str, object]]:
+    """Expose every opened document with compact retrieval progress metadata."""
+    locate_attempt_counts: dict[str, int] = {}
+    latest_locate_by_document: dict[str, ResearchTraceEntry] = {}
+    for entry in state.trace:
+        document_id = entry.action_input.get("document_id")
+        if entry.action == "locate" and isinstance(document_id, str):
+            locate_attempt_counts[document_id] = locate_attempt_counts.get(document_id, 0) + 1
+            latest_locate_by_document[document_id] = entry
+
+    supported_constraints_by_document: dict[str, set[str]] = {}
+    for fact in state.facts:
+        if fact.document_id is None:
+            continue
+        supported_constraints_by_document.setdefault(fact.document_id, set()).update(
+            relation.constraint_id
+            for relation in fact.constraint_evidence
+            if relation.status == "supported"
+        )
+
+    documents: list[dict[str, object]] = []
+    for document in state.documents:
+        supported_constraint_ids = sorted(supported_constraints_by_document.get(document.id, set()))
+        latest = latest_locate_by_document.get(document.id)
+        has_new_supporting_fact = (
+            any(fact.supports_constraints for fact in latest.new_facts)
+            if latest is not None
+            else False
+        )
+        documents.append(
+            {
+                "id": document.id,
+                "url": document.url,
+                "title": document.title,
+                "supported_constraint_ids": supported_constraint_ids,
+                "locate_attempt_count": locate_attempt_counts.get(document.id, 0),
+                "last_locate_query": latest.action_input.get("query") if latest else None,
+                "last_locate_progress": (
+                    has_new_supporting_fact or bool(latest.resolved_entities)
+                )
+                if latest is not None
+                else None,
+            }
+        )
+    return documents
 
 
 def _candidate_scope_summary(state: ResearchState) -> list[dict[str, object]]:
